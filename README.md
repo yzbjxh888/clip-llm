@@ -67,8 +67,8 @@ clipllm02-desktop         # 启动
 需要 Python ≥ 3.10；桌面界面需要 `PySide6-Essentials >= 6.8`。
 
 ```bash
-git clone <你的仓库地址>
-cd clipllm02
+git clone git@github.com:yzbjxh888/clip-llm.git
+cd clip-llm
 bash scripts/setup.sh                 # 重建最小 venv + 跑回归测试
 .venv/bin/clipllm02-desktop           # 启动
 
@@ -82,7 +82,7 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests
 
 ```bash
 bash scripts/backup.sh      # 不含 venv 的源码快照（dist/）
-bash scripts/build_deb.sh   # 生成 dist/clipllm02_<版本>_amd64.deb
+bash scripts/build_deb.sh   # 生成 dist/clipllm02_0.2.6_amd64.deb
 ```
 
 ### 配置模型
