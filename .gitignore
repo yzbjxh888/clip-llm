@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+*.deb
+*.zip
+*.tar.gz
+
+# 截图工具测试残留
+/slurp
+
+# 本地配置与密钥：用户配置在 ~/.config/clip-llm02/，不该进仓库
+.env
+.env.*
+*.key
+*.pem
+settings.json
+*.log

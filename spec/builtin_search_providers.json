@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "baidu",
+      "label": "百度",
+      "url_template": "https://www.baidu.com/s?wd=%s",
+      "mode": "default_browser",
+      "enabled": true,
+      "order": 10,
+      "contexts": ["*"]
+    },
+    {
+      "id": "baidu_baike",
+      "label": "百度百科",
+      "url_template": "https://www.baidu.com/s?wd=site%3Abaike.baidu.com+%s",
+      "mode": "default_browser",
+      "enabled": true,
+      "order": 20,
+      "contexts": ["*"]
+    },
+    {
+      "id": "google",
+      "label": "Google",
+      "url_template": "https://www.google.com/search?q=%s",
+      "mode": "default_browser",
+      "enabled": true,
+      "order": 30,
+      "contexts": ["*"]
+    },
+    {
+      "id": "google_wiki",
+      "label": "Google 搜维基百科",
+      "url_template": "https://www.google.com/search?q=site%3Aen.wikipedia.org%2Fwiki+%s",
+      "mode": "default_browser",
+      "enabled": true,
+      "order": 40,
+      "contexts": ["*"]
+    },
+    {
+      "id": "alphaxiv",
+      "label": "Google 搜 alphaXiv",
+      "url_template": "https://www.google.com/search?q=site%3Aalphaxiv.org+%s",
+      "mode": "default_browser",
+      "enabled": true,
+      "order": 50,
+      "contexts": ["*"]
+    },
+    {
+      "id": "arxiv",
+      "label": "arXiv",
+      "url_template": "https://arxiv.org/search/?query=%s&searchtype=all",
+      "mode": "default_browser",
+      "enabled": true,
+      "order": 60,
+      "contexts": ["*"]
+    },
+    {
+      "id": "scholar",
+      "label": "Google 学术",
+      "url_template": "https://scholar.google.com/scholar?q=%s",
+      "mode": "default_browser",
+      "enabled": true,
+      "order": 70,
+      "contexts": ["*"]
+    }
+  ],
+  "default_provider": "google",
+  "show_inline_buttons": true,
+  "max_query_chars": 200
+}

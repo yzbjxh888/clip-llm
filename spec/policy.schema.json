@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://clip-llm.local/schema/policy.schema.json",
+  "title": "Preflight policy",
+  "type": "object",
+  "required": ["version", "rules", "levels"],
+  "properties": {
+    "version": {"type": "integer", "minimum": 1},
+    "description": {"type": "string"},
+    "rules": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/definitions/rule"}
+    },
+    "levels": {
+      "type": "object",
+      "required": ["BLOCK", "WARN", "CONFIRM", "ALLOW"],
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "popup": {"type": "boolean"},
+          "request": {"type": "boolean"},
+          "log": {"type": "boolean"},
+          "banner": {"type": "boolean"},
+          "confirm": {"type": "boolean"}
+        }
+      }
+    }
+  },
+  "definitions": {
+    "rule": {
+      "type": "object",
+      "required": ["level", "locked", "detector", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "level": {"type": "string", "enum": ["BLOCK", "WARN", "CONFIRM", "ALLOW"]},
+        "locked": {"type": "boolean", "description": "true 时设置页不允许下调该级别"},
+        "enabled": {"type": "boolean", "description": "false 时该规则不参与判定"},
+        "detector": {"type": "string", "enum": ["regex", "feature", "threshold", "quota", "dedup", "text_is_blank"]},
+        "feature": {"type": ["string", "null"]},
+        "pattern": {"type": "string"},
+        "threshold": {"type": "string"},
+        "applies_when": {"type": "object"},
+        "multiline_code_exempt": {"type": "boolean"},
+        "description": {"type": "string"}
+      }
+    }
+  }
+}

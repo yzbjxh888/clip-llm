@@ -1,0 +1,577 @@
+{
+  "version": 2,
+  "intents_version": 5,
+  "description": "0.2 出厂配置。routes 是骨架用的简化 RoutePack：真实 9 套完整提示词由迁移脚本从 0.1 resources/builtin.json 导入，这里只提供可运行的等价结构。",
+  "trigger_policy": "menu",
+  "disabled_route_action": "hide_from_menu",
+  "menu": {
+    "enabled": true,
+    "show_other_domains": true,
+    "show_disabled_items": "grayed",
+    "recommended_limit": 9,
+    "other_per_domain": 3,
+    "remember_last_intent": true,
+    "default_intent_policy": "last_used",
+    "auto_submit": false,
+    "free_input_enabled": true,
+    "format_toggle_enabled": true,
+    "search_buttons_enabled": true,
+    "show_copy_route": true,
+    "timeout_seconds": 0
+  },
+  "free_input": {
+    "mode": "instruction",
+    "max_chars": 2000,
+    "max_prompt_chars": 4000
+  },
+  "feature_switches": {
+    "en_query": true,
+    "zh_query": true,
+    "latex_query": true,
+    "chem_query": true,
+    "code_query": true,
+    "image_intents": true
+  },
+  "detection": {
+    "high": 0.8,
+    "mid": 0.5,
+    "gap": 0.15,
+    "mixed_min_score": 0.8,
+    "max_candidates": 3,
+    "score_mode": "heuristic"
+  },
+  "formats": {
+    "enabled": [
+      "static",
+      "table",
+      "interactive",
+      "annotate"
+    ],
+    "default": "static"
+  },
+  "image": {
+    "quick_preset_enabled": true,
+    "asset_ttl_days": 7,
+    "auto_recognize_in_menu": false,
+    "max_bytes": 8388608
+  },
+  "image_text_conflict": "image_only",
+  "modality_window_ms": 300,
+  "other_views": {
+    "max_items": 6,
+    "items": [
+      {
+        "id": "origin",
+        "label": "历史背景与起源",
+        "hint": "它从哪来、为什么会出现",
+        "domains": [],
+        "order": 10,
+        "enabled": true,
+        "prompt": "请从历史背景与起源的角度解释用户输入：它最早出现在什么语境，为什么会被提出或流行。严格按 JSON 输出，至少包含 title 与 answer。"
+      },
+      {
+        "id": "development",
+        "label": "发展过程",
+        "hint": "经历了哪些阶段与关键转折",
+        "domains": [],
+        "order": 20,
+        "enabled": true,
+        "prompt": "请从发展过程的角度解释用户输入：按时间或阶段说明关键变化、转折与当前状态。严格按 JSON 输出，至少包含 title 与 answer。"
+      },
+      {
+        "id": "interpretation",
+        "label": "其他解读方式",
+        "hint": "还有哪些不同理解",
+        "domains": [],
+        "order": 30,
+        "enabled": true,
+        "prompt": "请给出对用户输入的其他可能解读方式，逐条说明每种理解成立的条件与差别。严格按 JSON 输出，至少包含 title 与 answer。"
+      },
+      {
+        "id": "debate",
+        "label": "争议与不同观点",
+        "hint": "围绕它有哪些分歧",
+        "domains": [],
+        "order": 40,
+        "enabled": true,
+        "prompt": "请列出围绕用户输入的常见争议与不同观点，说明各方依据与分歧点。严格按 JSON 输出，至少包含 title 与 answer。"
+      },
+      {
+        "id": "application",
+        "label": "实际应用场景",
+        "hint": "在真实场景里怎么用",
+        "domains": [],
+        "order": 50,
+        "enabled": true,
+        "prompt": "请说明用户输入在真实场景中的应用方式，给出典型例子与适用边界。严格按 JSON 输出，至少包含 title 与 answer。"
+      },
+      {
+        "id": "comparison",
+        "label": "与相近概念对比",
+        "hint": "它和相邻概念怎么区分",
+        "domains": [],
+        "order": 60,
+        "enabled": true,
+        "prompt": "请把用户输入与最相近的概念做对比，给出可判定的分界条件与常见混淆点。严格按 JSON 输出，至少包含 title 与 answer。"
+      }
+    ]
+  },
+  "search_default_provider": "google",
+  "search_show_inline_buttons": true,
+  "search_max_query_chars": 200,
+  "daily_request_limit": 300,
+  "thresholds": {
+    "word_max_len": 15,
+    "phrase_max_words": 5,
+    "cn_pure_max": 20,
+    "cn_mixed_max": 30,
+    "cn_sentence_max": 120,
+    "cn_question_max": 120,
+    "cn_paragraph_max": 600,
+    "code_max": 80,
+    "code_block_max": 1000,
+    "cn_dominant_min": 6,
+    "cn_max_chars": 600
+  },
+  "domains": [
+    {
+      "id": "math",
+      "label": "数学 / 公式",
+      "switch": "latex_query",
+      "score": 0.92,
+      "modalities": [
+        "text",
+        "image",
+        "mixed"
+      ],
+      "when": {
+        "feature": "latex_signal",
+        "op": "eq",
+        "value": true
+      },
+      "evidence": [
+        "检测到 LaTeX 定界符或数学命令"
+      ]
+    },
+    {
+      "id": "physics",
+      "label": "物理",
+      "switch": "latex_query",
+      "score": 0.87,
+      "modalities": [
+        "text",
+        "image",
+        "mixed"
+      ],
+      "when": {
+        "any": [
+          {
+            "feature": "physics_signal",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "feature": "physics_term",
+            "op": "eq",
+            "value": true
+          }
+        ]
+      },
+      "evidence": [
+        "检测到物理量纲、物理常量或物理术语"
+      ]
+    },
+    {
+      "id": "chem",
+      "label": "化学",
+      "switch": "chem_query",
+      "score": 0.9,
+      "modalities": [
+        "text",
+        "image",
+        "mixed"
+      ],
+      "when": {
+        "feature": "chem_signal",
+        "op": "eq",
+        "value": true
+      },
+      "evidence": [
+        "检测到两个及以上元素符号组合或化学式结构"
+      ]
+    },
+    {
+      "id": "code",
+      "label": "代码块",
+      "label": "编程",
+      "switch": "code_query",
+      "score": 0.88,
+      "modalities": [
+        "text",
+        "image",
+        "mixed"
+      ],
+      "when": {
+        "feature": "code_signal",
+        "op": "eq",
+        "value": true
+      },
+      "evidence": [
+        "检测到代码关键字、多行缩进或命令行特征"
+      ]
+    },
+    {
+      "id": "en",
+      "label": "英语 / 语言",
+      "switch": "en_query",
+      "score": 0.82,
+      "modalities": [
+        "text",
+        "image",
+        "mixed"
+      ],
+      "when": {
+        "any": [
+          {
+            "feature": "is_word",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "feature": "is_phrase",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "feature": "en_sentence",
+            "op": "eq",
+            "value": true
+          }
+        ]
+      },
+      "evidence": [
+        "检测到英文单词、短语或句子结构"
+      ]
+    },
+    {
+      "id": "zh",
+      "label": "中文 / 术语",
+      "switch": "zh_query",
+      "score": 0.8,
+      "modalities": [
+        "text",
+        "image",
+        "mixed"
+      ],
+      "when": {
+        "feature": "has_cn",
+        "op": "eq",
+        "value": true
+      },
+      "evidence": [
+        "检测到中文字符"
+      ]
+    },
+    {
+      "id": "image",
+      "label": "图像内容",
+      "switch": "image_intents",
+      "score": 0.85,
+      "modalities": [
+        "image",
+        "mixed"
+      ],
+      "when": null,
+      "evidence": [
+        "输入含图片资源"
+      ]
+    }
+  ],
+  "routes": {
+    "en_word": {
+      "id": "en_word",
+      "label": "英语单词",
+      "enabled": true,
+      "query_type": "english_word",
+      "kind": "composite",
+      "prompt": "你是英语词汇专家，服务于桌面词典弹窗。用户输入一个英语单词，读者是中文母语学习者。严格按 JSON 输出，禁止代码围栏。按字段给出音标、词性释义、词源、搭配、例句与记忆钩子。",
+      "sections": {
+        "phonetic": "【音标】给出斜杠包裹的国际音标，不确定则留空字符串。",
+        "definitions": "【释义】至少两个词性，每个词性只列最常用的一到两个义项，按使用频率排序。",
+        "etymology_roots": "【词源】只含三部分：来源、词根拆解（用箭头连接）、演变逻辑与一到两个同源词。目标是让读者记住这个词为什么长这样，严禁堆砌学术细节。",
+        "phrases": "【搭配】至少三个最高频、最地道的搭配，禁止生僻搭配。",
+        "examples": "【例句】至少两个双语例句，覆盖不同词性或义项，用词难度不超过目标词。",
+        "memory_tip": "【记忆钩子】一句话，必须与真实词义严格一致，想不出可靠的则留空。"
+      },
+      "fields": [
+        "title",
+        "phonetic",
+        "definitions",
+        "etymology_roots",
+        "phrases",
+        "examples",
+        "memory_tip"
+      ]
+    },
+    "en_phrase": {
+      "id": "en_phrase",
+      "label": "英语短语",
+      "enabled": true,
+      "query_type": "english_phrase",
+      "kind": "composite",
+      "prompt": "你是英语习语与短语专家。用户输入一个英语短语或习语。严格按 JSON 输出，禁止代码围栏。按字段给出字面义、整体释义、中文对应说法、语体、近义反义、易错点与例句。",
+      "sections": {
+        "literal_meaning": "【字面义】解释为什么是这个意思，可含意象或典故，必须准确，不能编造来源。",
+        "meaning": "【整体释义】中文整体释义，不逐词翻译。",
+        "usage": "【语体】标注正式/非正式/口语/书面，给典型适用场景与一个对话示例。",
+        "common_mistakes": "【常见误用】真实常见的易混淆词或误译，无则空数组。",
+        "examples": "【例句】至少三个双语例句，覆盖不同语境。"
+      },
+      "fields": [
+        "title",
+        "literal_meaning",
+        "meaning",
+        "chinese_equivalent",
+        "usage",
+        "similar",
+        "opposite",
+        "common_mistakes",
+        "examples"
+      ]
+    },
+    "chinese": {
+      "id": "chinese",
+      "label": "中文词语",
+      "enabled": true,
+      "query_type": "chinese",
+      "kind": "composite",
+      "prompt": "你是中文解析专家。用户输入一个中文词，可能是科技术语、普通词、成语或专名。严格按 JSON 输出。定义必须可判定，邻居概念必须给出可判定的边界条件。",
+      "sections": {
+        "definition": "【定义】必须含核心特征与一个典型应用场景，能拿来判定新实例算不算。",
+        "usage_criteria": "【判定条件】列出条件并给反例，说明反例该改用哪个词以及为什么。",
+        "neighbors": "【邻近概念】给上位、同层、下位关系，每条必须含可判定的分界条件。"
+      },
+      "fields": [
+        "title",
+        "type",
+        "identification",
+        "definition",
+        "usage_criteria",
+        "failure_conditions",
+        "neighbors",
+        "operations",
+        "examples",
+        "anchors"
+      ]
+    },
+    "chinese_sentence": {
+      "id": "chinese_sentence",
+      "label": "中文句解",
+      "enabled": true,
+      "query_type": "chinese_sentence",
+      "kind": "composite",
+      "prompt": "你是跨学科句子解读专家。严格按 JSON 输出。先定位领域，再讲清科学意思，把专业概念当场落地，看清论断与依据，最后点出易错点。严禁语法成分拆解。",
+      "sections": {
+        "meaning": "【意思】用白话讲透句子的科学内容，专业概念首次出现时给出准确定义或关键性质。",
+        "structure": "【依据】只拆科学内容：断言了什么、靠什么机理成立、前提条件、能推出什么。"
+      },
+      "fields": [
+        "title",
+        "style",
+        "meaning",
+        "structure",
+        "rhetoric",
+        "rewrite",
+        "pitfalls"
+      ]
+    },
+    "chinese_question": {
+      "id": "chinese_question",
+      "label": "中文答疑",
+      "enabled": true,
+      "query_type": "chinese_question",
+      "kind": "composite",
+      "prompt": "你是中文答疑专家。用户输入一个中文疑问句。严格按 JSON 输出，分点作答并给出依据，不确定处明确标注。",
+      "sections": {
+        "answer": "【作答】先给结论，再分点展开。",
+        "evidence": "【依据】每条结论对应的原理、公式或可核验锚点。"
+      },
+      "fields": [
+        "title",
+        "answer",
+        "key_points",
+        "evidence",
+        "caveats"
+      ]
+    },
+    "chinese_paragraph": {
+      "id": "chinese_paragraph",
+      "label": "中文段落",
+      "enabled": true,
+      "query_type": "chinese_paragraph",
+      "kind": "composite",
+      "prompt": "你是中文段落解析专家。严格按 JSON 输出，拆出论点、论证结构、前提与结论，指出隐含假设。",
+      "sections": {
+        "structure": "【结构】逐段说明它在论证中承担什么作用。",
+        "key_points": "【要点】三到五条可核验的核心命题。"
+      },
+      "fields": [
+        "title",
+        "thesis",
+        "structure",
+        "premises",
+        "conclusion",
+        "assumptions",
+        "key_points"
+      ]
+    },
+    "latex": {
+      "id": "latex",
+      "label": "LaTeX 公式",
+      "enabled": true,
+      "query_type": "latex",
+      "kind": "composite",
+      "prompt": "你是 LaTeX 数学公式解析专家。用户输入一个数学公式，可能是单行、多行推导、矩阵或方程组。严格按 JSON 输出，让读者几秒内看懂这个式子。",
+      "sections": {
+        "structure": "【结构】逐项说明符号、上下标、算子与量纲，保留原始公式语义。",
+        "meaning": "【含义】这个式子在断言什么，适用前提是什么。",
+        "behavior": "【行为】参数变化时结果如何变化，指出关键阈值与极限。"
+      },
+      "fields": [
+        "title",
+        "read_aloud",
+        "structure",
+        "meaning",
+        "derivation",
+        "behavior",
+        "applications"
+      ]
+    },
+    "code": {
+      "id": "code",
+      "enabled": true,
+      "query_type": "code",
+      "kind": "composite",
+      "prompt": "你是代码解析专家。用户输入一段多行代码或命令块。严格按 JSON 输出，说清功能、输入输出、执行流程与风险点。",
+      "sections": {
+        "flow": "【流程】按执行顺序说明每一步做了什么。",
+        "pitfalls": "【风险点】边界条件、异常路径、平台差异与常见误用。"
+      },
+      "fields": [
+        "title",
+        "purpose",
+        "inputs",
+        "outputs",
+        "flow",
+        "pitfalls",
+        "example"
+      ]
+    },
+    "general": {
+      "id": "general",
+      "label": "通用解析",
+      "enabled": true,
+      "query_type": "general",
+      "kind": "composite",
+      "prompt": "你是技术讲解专家。用户输入一段技术或混合内容。严格按 JSON 输出，说清它是什么、怎么用、有什么要注意。",
+      "sections": {
+        "summary": "【简要解释】一段话说清对象与用途。",
+        "key_points": "【要点清单】三到五条具体、可核验的要点，禁止空话。"
+      },
+      "fields": [
+        "title",
+        "summary",
+        "key_points",
+        "examples",
+        "caveats"
+      ]
+    },
+    "chem_substance": {
+      "id": "chem_substance",
+      "enabled": true,
+      "query_type": "chem_substance",
+      "kind": "intent",
+      "prompt": "你是化学解析专家。用户输入一个化学式或物质名称。严格按 JSON 输出，说明组成、结构、主要性质与安全注意。不得编造未经验证的数据。",
+      "sections": {
+        "composition": "【组成】元素比例、摩尔质量与结构特征。",
+        "properties": "【性质】物理与化学性质，标注常见条件。"
+      },
+      "fields": [
+        "title",
+        "composition",
+        "structure",
+        "properties",
+        "safety",
+        "uses"
+      ],
+      "label": "化学物质"
+    },
+    "image_ocr": {
+      "id": "image_ocr",
+      "enabled": true,
+      "query_type": "image_ocr",
+      "kind": "intent",
+      "vision": true,
+      "prompt": "请识别图片中的文字和数学公式。公式用 LaTeX 表示，行内公式用 $...$ 包裹，独立公式用 $$...$$ 包裹并单独占一行。保留原有阅读顺序，只返回识别结果，不要添加额外解释。",
+      "sections": {
+        "format": "【格式要求】行内与独立公式分别包裹，表格用 Markdown 表格输出。"
+      },
+      "fields": [
+        "title",
+        "text",
+        "latex",
+        "tables",
+        "notes"
+      ],
+      "label": "图片文字"
+    },
+    "image_table": {
+      "id": "image_table",
+      "enabled": true,
+      "query_type": "image_table",
+      "kind": "intent",
+      "vision": true,
+      "prompt": "请提取图片中的表格与数据，还原行列结构与数值。严格按 JSON 输出，不要添加解释。",
+      "sections": {},
+      "fields": [
+        "title",
+        "headers",
+        "rows",
+        "notes"
+      ],
+      "label": "图片表格"
+    },
+    "image_explain": {
+      "id": "image_explain",
+      "enabled": true,
+      "query_type": "image_explain",
+      "kind": "intent",
+      "vision": true,
+      "prompt": "请理解并解释这张图片的内容。若是机制图、统计图或结构图，说明组成部分、相互关系与它想表达的结论。严格按 JSON 输出。",
+      "sections": {},
+      "fields": [
+        "title",
+        "summary",
+        "components",
+        "relations",
+        "conclusion"
+      ],
+      "label": "图片解释"
+    },
+    "image_annotate": {
+      "id": "image_annotate",
+      "enabled": true,
+      "query_type": "image_annotate",
+      "kind": "intent",
+      "vision": true,
+      "prompt": "请找出图片中的关键内容并返回标注框。严格按 JSON 输出 boxes 数组，每项含 x、y、w、h、label；坐标使用 0 到 1 的归一化值。",
+      "sections": {},
+      "fields": [
+        "title",
+        "boxes",
+        "notes"
+      ],
+      "label": "图片标注"
+    }
+  }
+}

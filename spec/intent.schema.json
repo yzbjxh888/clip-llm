@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://clip-llm.local/schema/intent.schema.json",
+  "title": "Intent definition",
+  "type": "object",
+  "required": ["id", "label", "domains", "modalities", "primary_route", "order", "enabled"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9_.*-]+$", "description": "稳定唯一 ID，改显示名不得改变"},
+    "kind": {"type": "string", "enum": ["intent", "composite"], "default": "intent"},
+    "label": {"type": "string", "minLength": 1, "description": "动词 + 读者收益，不暴露内部 ID"},
+    "hint": {"type": "string"},
+    "domains": {
+      "type": "array", "minItems": 1,
+      "items": {"type": "string"},
+      "description": "所属领域；'*' 表示通用"
+    },
+    "modalities": {
+      "type": "array", "minItems": 1,
+      "items": {"type": "string", "enum": ["text", "image", "mixed", "*"]}
+    },
+    "applicable": {
+      "description": "预筛选条件树（决定显示/置灰，不是分类）",
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/definitions/condition"}
+      ]
+    },
+    "primary_route": {"type": ["string", "null"], "description": "主 RoutePack id；null 表示自由输入专用"},
+    "includes": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/include"}
+    },
+    "conflict_policy": {"type": "string", "enum": ["primary_wins", "include_first", "error"], "default": "primary_wins"},
+    "token_budget": {"type": "integer", "minimum": 200, "maximum": 32000, "default": 1600},
+    "default_format": {"type": "string", "enum": ["static", "table", "interactive", "annotate"], "default": "static"},
+    "supported_formats": {
+      "type": "array", "minItems": 1,
+      "items": {"type": "string", "enum": ["static", "table", "interactive", "annotate"]}
+    },
+    "order": {"type": "integer", "minimum": 0, "maximum": 9999},
+    "enabled": {"type": "boolean", "default": true},
+    "free_input_only": {"type": "boolean", "default": false},
+    "prompt_version": {"type": "string", "default": "1.0.0"},
+    "schema_version": {"type": "string", "default": "1.0.0"}
+  },
+  "definitions": {
+    "include": {
+      "type": "object",
+      "required": ["route_id", "sections"],
+      "additionalProperties": false,
+      "properties": {
+        "route_id": {"type": "string"},
+        "sections": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "as": {"type": "string"}
+      }
+    },
+    "condition": {
+      "type": "object",
+      "properties": {
+        "feature": {"type": "string"},
+        "op": {"type": "string", "enum": ["eq", "ne", "gt", "ge", "lt", "le", "in", "contains", "regex", "truthy"]},
+        "value": {},
+        "all": {"type": "array", "items": {"$ref": "#/definitions/condition"}},
+        "any": {"type": "array", "items": {"$ref": "#/definitions/condition"}},
+        "not": {"$ref": "#/definitions/condition"}
+      }
+    }
+  }
+}

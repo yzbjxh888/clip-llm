@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>01 · 更紧凑 — clip-llm 布局草稿</title>
+<style>
+:root{
+  --paper:#f5f4ed; --card:#faf9f5; --ink:#141413; --sub:#5e5d59;
+  --accent:#c96442; --line:#e8e6dc; --tint:#f0eee6; --err:#b53333;
+  --r:10px;
+  --serif:"Noto Serif CJK SC","Songti SC",Georgia,serif;
+  --sans:"Noto Sans CJK SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#e9e6dd;color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+/* 原型控制台（不属于产品窗口） */
+.console{position:sticky;top:0;z-index:20;background:#2f2c27;color:#f5f4ed;padding:12px 20px;box-shadow:0 2px 10px rgba(0,0,0,.18)}
+.console h1{font-family:var(--serif);font-size:17px;font-weight:500;margin-bottom:2px}
+.console h1 span{font-family:var(--sans);font-size:12px;color:#c9c3b5;margin-left:8px}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+.row>em{font-style:normal;font-size:11px;color:#a9a294;min-width:62px}
+.sw{display:flex;gap:5px;flex-wrap:wrap}
+.sw button{background:#413d36;color:#e8e4da;border:1px solid #575147;border-radius:6px;padding:4px 10px;font:12px var(--sans);cursor:pointer}
+.sw button:hover{background:#565046}
+.sw button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.sw button:disabled{opacity:.35;cursor:default}
+main{max-width:1180px;margin:22px auto 60px;padding:0 20px}
+.stage-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:10px}
+.stage-head strong{font-family:var(--serif);font-size:16px;font-weight:500}
+.stage-head span{font-size:12px;color:#6c6558}
+/* 产品窗口 */
+.window{width:780px;max-width:100%;height:620px;margin:0 auto;background:var(--paper);border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 44px rgba(48,40,28,.16);display:flex;flex-direction:column;overflow:hidden}
+.topbar{display:flex;gap:5px;padding:8px 10px;border-bottom:1px solid var(--line);background:var(--card);flex:none}
+.query{flex:1;min-width:0;height:30px;padding:0 10px;border:1px solid var(--line);border-radius:7px;background:#fff;font:13px var(--sans);color:var(--ink)}
+.ibtn{height:30px;padding:0 9px;border:1px solid var(--line);border-radius:7px;background:var(--tint);font:12px var(--sans);color:var(--sub);cursor:pointer;white-space:nowrap}
+.ibtn:hover{border-color:var(--accent);color:var(--accent)}
+.ibtn.go{background:var(--accent);border-color:var(--accent);color:#fff}
+.ibtn.go:hover{background:#ad5232}
+.meta{display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:1px solid var(--line);font-size:11px;color:var(--sub);flex:none}
+.meta .sp{flex:1}
+.badge{font-size:10px;padding:1px 7px;border-radius:20px;border:1px solid var(--line);background:var(--tint)}
+.b-empty{color:var(--sub)} .b-loading{color:#a24f54;border-color:#e2c3c0}
+.b-error{color:var(--err);border-color:#e2b9b9;background:#f7ecea}
+.b-long{color:#6a5c3f;border-color:#ded3b8}
+.b-normal{color:#4a6b4a;border-color:#cdddc9}
+.body{flex:1;min-height:0;overflow:auto;padding:10px}
+.statusline{display:flex;align-items:center;gap:6px;padding:5px 10px;border-top:1px solid var(--line);background:var(--card);font-size:11px;color:var(--sub);flex:none}
+.statusline .sp{flex:1}
+.statusline a{color:var(--sub);text-decoration:none;padding:1px 5px;border-radius:4px;cursor:pointer}
+.statusline a:hover{background:var(--tint);color:var(--accent)}
+/* 01 的立场：矮、密、双列 */
+h2.sec{font:600 13px var(--sans);color:var(--accent);margin:0 0 5px}
+.caption{font:500 15px var(--serif);margin:0 0 6px}
+.headline{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.headline .sp{flex:1}
+.mini{font:11px var(--sans);color:var(--sub);border:0;background:transparent;cursor:pointer}
+.mini:hover{color:var(--accent)}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
+.grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}
+.intent,.other{display:block;width:100%;text-align:left;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--ink);font:12px/1.35 var(--sans);padding:6px 9px;min-height:29px;cursor:pointer}
+.intent:hover,.other:hover{border-color:var(--accent);background:var(--tint)}
+.intent.default{border-color:var(--accent);background:var(--tint);font-weight:600}
+.other{color:var(--sub);font-size:11px;min-height:26px;padding:4px 9px}
+.subhead{font:600 11px var(--sans);color:var(--sub);margin:8px 0 4px}
+.free{display:flex;gap:5px;margin-top:8px}
+.free input{flex:1;height:29px;padding:0 9px;border:1px solid var(--line);border-radius:7px;background:#fff;font:12px var(--sans)}
+.free button{height:29px;padding:0 12px;border:0;border-radius:7px;background:var(--accent);color:#fff;font:12px var(--sans);cursor:pointer}
+/* 通用内容组件 */
+.bubble-user{background:var(--tint);color:var(--ink);border-radius:9px;padding:5px 10px;margin:6px 0 6px auto;max-width:76%;width:fit-content;font-size:12px;text-align:right}
+.answer{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:9px 11px;margin-bottom:8px}
+.answer h3{font:500 16px var(--serif);margin-bottom:4px}
+.answer p{font-size:12px;margin:3px 0}
+.answer b{color:var(--accent);font-weight:600}
+table{border-collapse:collapse;width:100%;margin:6px 0;font-size:11px}
+th,td{border:1px solid var(--line);padding:4px 6px;text-align:left;vertical-align:top}
+th{background:var(--tint);color:var(--accent);font-weight:600}
+.tags span{display:inline-block;background:var(--tint);color:var(--sub);border-radius:20px;padding:1px 8px;font-size:11px;margin:2px 3px 0 0}
+.center-empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:9px;color:var(--sub)}
+.center-empty .mark{width:42px;height:42px;border:2px dashed var(--line);border-radius:var(--r)}
+.center-empty strong{font:500 17px var(--serif);color:var(--ink)}
+.center-empty p{font-size:12px;max-width:330px;line-height:1.7}
+.chips button{margin:2px;padding:4px 9px;border:1px solid var(--line);border-radius:20px;background:var(--card);font:11px var(--sans);color:var(--sub);cursor:pointer}
+.chips button:hover{border-color:var(--accent);color:var(--accent)}
+.sk{height:9px;border-radius:5px;background:linear-gradient(90deg,var(--tint) 25%,#e2ddd0 50%,var(--tint) 75%);background-size:200% 100%;animation:shine 1.3s linear infinite;margin:6px 0}
+.sk.w60{width:60%} .sk.w80{width:80%} .sk.w40{width:40%} .sk.tall{height:44px}
+@keyframes shine{from{background-position:200% 0}to{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){.sk{animation:none}}
+.notice{border-left:3px solid var(--err);background:#f7ecea;padding:8px 11px;border-radius:0 8px 8px 0;margin-bottom:9px}
+.notice strong{color:var(--err);font-size:13px}
+.notice p{font-size:12px;color:var(--sub);margin-top:3px;line-height:1.6}
+.actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+.actions button{padding:5px 11px;border:1px solid var(--line);border-radius:7px;background:var(--card);font:12px var(--sans);cursor:pointer}
+.actions button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.actions button:hover{border-color:var(--accent)}
+pre.hintbox{background:var(--tint);border-radius:7px;padding:8px;font:11px/1.6 ui-monospace,monospace;white-space:pre-wrap;color:var(--sub);margin-top:6px}
+.scrollbox{max-height:100%;overflow:auto;padding-right:5px}
+.trunc{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 外观页 */
+.form{display:grid;grid-template-columns:150px 1fr;gap:7px 10px;align-items:center;font-size:12px}
+.form label{color:var(--sub)}
+.form input[type=number]{height:29px;width:90px;padding:0 8px;border:1px solid var(--line);border-radius:7px;background:#fff;font:12px var(--sans)}
+.form input.bad{border:2px solid var(--err);background:#f7ecea}
+.form .wide{grid-column:1/-1;line-height:1.7;color:var(--sub)}
+.dlg{display:flex;justify-content:flex-end;gap:6px;margin-top:12px;padding-top:9px;border-top:1px solid var(--line)}
+.dlg button{padding:5px 14px;border:1px solid var(--line);border-radius:7px;background:var(--card);font:12px var(--sans);cursor:pointer}
+.dlg button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.tabs-mini{display:flex;gap:3px;flex-wrap:wrap;margin-bottom:9px}
+.tabs-mini span{font-size:11px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;color:var(--sub)}
+.tabs-mini span.on{background:var(--accent);border-color:var(--accent);color:#fff}
+/* 状态一览 */
+.legend{margin-top:30px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+.legend h2{font:500 17px var(--serif);margin-bottom:4px}
+.legend>p{font-size:12px;color:var(--sub);margin-bottom:12px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:9px}
+.card{border:1px solid var(--line);border-radius:9px;padding:10px;cursor:pointer;background:#fff}
+.card:hover{border-color:var(--accent)}
+.card.on{border-color:var(--accent);background:var(--tint)}
+.card b{display:block;font-size:12px;margin-bottom:3px}
+.card small{font-size:11px;color:var(--sub);line-height:1.6;display:block}
+</style>
+</head>
+<body>
+<header class="console">
+  <h1>方向 01 · 更紧凑<span>同一套色，行更矮、双列、一屏塞下更多选项</span></h1>
+  <div class="row"><em>页面</em><div class="sw" id="pg">
+    <button data-page="detect" class="on">初判</button><button data-page="result">结果</button><button data-page="look">设置 · 外观</button>
+  </div></div>
+  <div class="row"><em>状态</em><div class="sw" id="st">
+    <button data-state="normal" class="on">正常（基准）</button><button data-state="empty">empty</button><button data-state="loading">loading</button><button data-state="error">error</button><button data-state="long">超长内容</button>
+  </div></div>
+  <div class="row"><em>真实内容</em><div class="sw" id="ct">
+    <button data-content="nacl" class="on">NaCl</button><button data-content="emc2">E=mc²</button><button data-content="zh">中文长句</button>
+  </div><span style="font-size:11px;color:#a9a294">仅作用于初判 / 结果页</span></div>
+</header>
+<main>
+  <div class="stage-head"><strong id="stageTitle"></strong><span id="stageNote"></span></div>
+  <div id="stage"></div>
+  <section class="legend">
+    <h2>四种状态一眼看</h2>
+    <p>当前页面下，每个状态都做出来了；点卡片可直接切换。另附「正常」作为对照基准。</p>
+    <div class="cards" id="stateCards"></div>
+    <h2 style="margin-top:18px">初判页的三种真实内容</h2>
+    <p>点卡片切换查询内容，没有占位假文。</p>
+    <div class="cards" id="contentCards"></div>
+  </section>
+</main>
+<script>
+const C={
+  nacl:{label:'NaCl',cat:'化学物质',hint:'氯化钠 · 食盐',
+    intents:['综合化学条目','这个式子该怎么念','反应条件与配平','和相近物质怎么区分','量纲与适用条件','常见误用','组成与结构','安全与储存'],
+    others:['历史背景与起源','实际应用场景','与相近概念对比','争议与不同观点']},
+  emc2:{label:'E=mc²',cat:'LaTeX 公式',hint:'质能方程',
+    intents:['综合公式解析','逐项读这个式子','把它推出来','量纲与适用条件','数值算例','直观类比','等价变形','推广','辨析','实验依据'],
+    others:['历史背景与起源','发展过程','其他解读方式','实际应用场景']},
+  zh:{label:'中文长句',cat:'中文 / 术语',hint:'论述句 · 需滚动',
+    text:'尽管这个结论在多数教科书里被当作不证自明的前提，但如果我们把观察尺度缩小到单个分子的热运动，就会发现它其实依赖一个很少被明说的假设，即系统足够大且足够接近平衡态。',
+    intents:['这句话在说什么','拆解这段论述','前提与结论','修辞与语气','改写','这个词怎么判定','隐含假设','常见误读'],
+    others:['历史背景与起源','其他解读方式','争议与不同观点','与相近概念对比']}
+};
+const TABLE=[
+ ['与浓硫酸','2NaCl + H₂SO₄ → Na₂SO₄ + 2HCl','加热'],
+ ['电解饱和食盐水','2NaCl + 2H₂O → 2NaOH + H₂↑ + Cl₂↑','通电'],
+ ['与硝酸银','NaCl + AgNO₃ → AgCl↓ + NaNO₃','常温'],
+ ['焰色反应','钠离子使火焰呈黄色','—'],
+ ['溶解度','20 °C 时约 36 g / 100 g 水','常温'],
+ ['熔融电解','2NaCl(l) → 2Na + Cl₂↑','约 801 °C'],
+ ['与浓硫酸（低温）','NaCl + H₂SO₄ → NaHSO₄ + HCl','常温'],
+ ['生理盐水','0.9% NaCl 水溶液','—']
+];
+const PAGES={detect:'初判页',result:'结果页',look:'设置 · 外观'};
+const STATES={normal:'正常（基准）',empty:'empty · 空',loading:'loading · 处理中',error:'error · 出错',long:'超长内容'};
+const ORDER=['empty','loading','error','long','normal'];
+const NOTE={empty:'空白时告诉用户下一步做什么',loading:'写清在等什么，不转圈了事',error:'说清原因并给可点的退路',long:'能滚、能收起，不裁掉内容',normal:'有内容时的样子，作为对照'};
+const STATUS={detect:'本地初判 · 未发送网络请求',result:'本地预览 · 未发送网络请求',look:'草稿事务：取消整体丢弃'};
+let cur={page:'detect',state:'normal',content:'nacl'};
+const q0=new URLSearchParams(location.search);
+if(PAGES[q0.get('page')])cur.page=q0.get('page');
+if(STATES[q0.get('state')])cur.state=q0.get('state');
+if(C[q0.get('content')])cur.content=q0.get('content');
+const esc=s=>String(s).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const badge=s=>'<span class="badge b-'+s+'">'+STATES[s]+'</span>';
+const key=c=>c==='zh'?C.zh.text:C[c].label;
+function opts(list,cls,from){return list.map((t,i)=>'<button class="'+cls+(from+i===0?' default':'')+'" data-act="pick">'+(i<9&&from<10?'<span style="color:#9a9385">'+(from+i+1)+'</span>  ':'')+esc(t)+'</button>').join('');}
+function grid(list,cls,from){return '<div class="grid">'+opts(list,cls,from||0)+'</div>';}
+function table(rows){return '<table><thead><tr><th>反应 / 场景</th><th>方程式或现象</th><th>条件</th></tr></thead><tbody>'+rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td>'+esc(r[1])+'</td><td>'+esc(r[2])+'</td></tr>').join('')+'</tbody></table>';}
+function emptyBox(title,text,chips){return '<div class="center-empty"><div class="mark"></div><strong>'+title+'</strong><p>'+text+'</p>'+(chips?'<div class="chips">'+chips+'</div>':'')+'</div>';}
+function skeleton(lines){return lines.map(w=>'<div class="sk '+w+'"></div>').join('');}
+
+function detectInner(s,c,data){
+  if(s==='empty')return emptyBox('还没有查询内容','复制一段文字，或在上面的输入框里直接写点什么后按回车。词典会在本地判断类别，不发网络请求。',
+    '<button data-content="nacl">试试 NaCl</button><button data-content="emc2">试试 E=mc²</button><button data-content="zh">试试一句中文长句</button>');
+  if(s==='loading')return '<h2 class="sec">正在判断类别…</h2><div class="bubble-user">'+esc(key(c))+'</div>'+skeleton(['w40','w80','w60','tall'])+'<p style="font-size:11px;color:var(--sub);margin-top:8px">正在匹配提示词模板，菜单阶段零模型请求。</p>';
+  if(s==='error')return '<div class="notice"><strong>! 这段内容被拦截了</strong><p>检测到 URL / 邮箱特征，按当前拦截规则不会发送到第三方模型。原文仍保留在查询框里，你可以改用本地解释。</p></div><div class="actions"><button class="primary" data-act="retry">仍然本地解释</button><button data-act="page:detect">换一种解释</button><button>复制原文</button></div>';
+  if(s==='long'){
+    const many=[...C.zh.intents,...C.zh.others,...C.nacl.intents,...C.emc2.intents,...C.zh.intents].slice(0,24);
+    return '<div class="headline"><span class="caption trunc" style="max-width:70%">初判 · '+esc(C.zh.cat)+'</span><span class="sp"></span><button class="mini">其他 ▾</button><button class="mini">自定义</button></div>'+
+      '<p class="trunc" style="font-size:11px;color:var(--sub);margin-bottom:6px">'+esc(C.zh.text)+'</p>'+
+      '<div class="scrollbox"><h2 class="sec">共 24 条查询方式（可滚动，不裁掉）</h2>'+grid(many,'intent',0)+'</div>';
+  }
+  return '<div class="headline"><span class="caption">初判 · '+esc(data.cat)+'</span><span class="sp"></span><button class="mini">其他 ▾</button><button class="mini">自定义</button></div>'+
+    '<p style="font-size:11px;color:var(--sub);margin-bottom:7px">'+esc(key(c))+' · '+esc(data.hint)+'</p>'+
+    '<h2 class="sec">常用查询方式</h2>'+grid(data.intents,'intent',0)+
+    '<div class="subhead">其他角度</div><div class="grid">'+opts(data.others,'other',20)+'</div>'+
+    '<div class="free"><input placeholder="描述你想怎么解释…"><button data-act="query">发送</button></div>';
+}
+function answerCard(c,long){
+  const rows=long?TABLE:TABLE.slice(0,3);
+  return '<div class="answer"><h3>氯化钠</h3>'+
+    '<p><b>读法</b> 氯化钠 / sodium chloride，化学式为 NaCl。</p>'+
+    '<p><b>组成</b> 钠离子与氯离子按 1:1 构成的离子晶体。</p>'+
+    '<p><b>常见反应</b></p>'+table(rows)+
+    '<div class="tags"><span>食盐</span><span>离子晶体</span><span>易溶于水</span>'+(long?'<span>电解制氯</span><span>融雪剂</span>':'')+'</div>'+
+    (long?'<p style="margin-top:6px"><b>安全</b> 日常食用量无碍；工业电解会产生氯气，需在通风条件下操作。高钠摄入人群应控制用量。</p>':'')+
+    '</div>';
+}
+function resultInner(s,c){
+  if(s==='empty')return emptyBox('还没有结果','回到初判页选一个查询方式，例如「综合化学条目」，结果会出现在这里。','<button data-page="detect">去初判页</button>');
+  if(s==='loading')return '<div class="bubble-user">'+esc(key(c))+'</div><h2 class="sec">正在生成第 1 轮回答…</h2>'+skeleton(['w40','w80','w60','tall','w80','w40'])+'<p style="font-size:11px;color:var(--sub)">已连上模型，正在流式返回结果；不会清空上一轮内容。</p>';
+  if(s==='error')return '<div class="bubble-user">'+esc(key(c))+'</div><div class="notice"><strong>! 模型未返回内容</strong><p>接口超时（45 秒）。本次只组装了请求，未发送成功，也没有写入知识库。原始提示词已保留。</p></div><pre class="hintbox">query_type: chem_substance\n输出字段：读法、组成、性质、常见反应、安全\n输入：'+esc(key(c))+'</pre><div class="actions"><button class="primary" data-act="retry">重试</button><button data-page="detect">返回初判</button><button>复制提示词</button></div>';
+  const long=s==='long';
+  let html='<div class="bubble-user">'+esc(key(c))+'</div>'+answerCard(c,long);
+  if(long){
+    html+='<div class="bubble-user">追问：那它为什么能融雪？</div><div class="answer"><h3>凝固点降低</h3><p>盐溶于水后降低水的凝固点，让 0 °C 附近的冰重新融化；温度过低（约 -10 °C 以下）效果明显变差，此时要换氯化钙。</p></div>'+
+      '<div class="bubble-user">追问：和氯化钙比呢？</div><div class="answer"><h3>两者的适用温度</h3>'+table([['氯化钠','约 -10 °C 以上','便宜、易得'],['氯化钙','可到 -30 °C 左右','溶解放热、成本更高'],['醋酸钾','更低','多用于机场跑道']])+'</div>';
+  }else{
+    html+='<div class="bubble-user">追问：那它为什么能融雪？</div><div class="answer"><h3>凝固点降低</h3><p>盐溶于水后降低水的凝固点，让 0 °C 附近的冰重新融化；温度过低时效果明显变差。</p></div>';
+  }
+  return '<div class="scrollbox">'+html+'</div>';
+}
+function lookInner(s){
+  const tabs=['外观','拦截','① 提示词模板','② 查询方式','③ 其他视角','搜索','模型与图片','知识库','行为'];
+  const mini='<div class="tabs-mini">'+tabs.map(t=>'<span class="'+(t==='外观'?'on':'')+'">'+t+'</span>').join('')+'</div>';
+  if(s==='empty')return mini+emptyBox('设置还没读进来','配置文件尚未载入，或者这是第一次启动。点「重新读取」会按默认值填好外观设置。','<button data-act="retry">重新读取</button>');
+  if(s==='loading')return mini+'<h2 class="sec">正在读取设置…</h2>'+skeleton(['w40','w80','w60','tall','w60'])+'<p style="font-size:11px;color:var(--sub)">读取 ~/.config/clip-llm02/settings.json</p>';
+  if(s==='error')return mini+'<div class="notice"><strong>! 配置校验失败</strong><p>结果卡片字号必须在 9–28 之间，当前是 31。改回去才能保存，其余改动不会被写盘。</p></div>'+
+    '<div class="form"><label>结果卡片字号</label><div><input type="number" class="bad" value="31"><span style="font-size:11px;color:var(--err);margin-left:8px">超出范围</span></div>'+
+    '<label>深色主题</label><div><input type="checkbox"> 深色主题</div></div>'+
+    '<div class="actions"><button class="primary" data-act="retry">改回 14</button><button>取消</button></div>'+dlg();
+  const long=s==='long';
+  return mini+'<h2 class="sec">外观</h2>'+
+    '<div class="form"><label>结果卡片字号</label><div><input type="number" value="14" min="9" max="28"> <span style="font-size:11px;color:var(--sub)">9–28</span></div>'+
+    '<label>深色主题</label><div><input type="checkbox"> 深色主题（窗口、按钮、气泡一起变深）</div>'+
+    '<div class="wide">结果排版、查询栏与标签页字号即时生效；主窗口可边缘缩放并记忆尺寸位置。'+
+    (long?'<br>字号同时作用于结果卡片正文、表格、公式与追问气泡；调整后已经打开的结果会按新字号现场重排，缓存里的旧排版不会复用。深色主题会替换整套颜色，不只是把结果区染黑：顶栏、标签、输入框、按钮、状态行与设置窗口都在同一套色里。若系统使用大字号，界面字号会一起放大，不会把文字截断。<br><br><b>预览</b><br>尽管这个结论在多数教科书里被当作不证自明的前提，但如果我们把观察尺度缩小到单个分子的热运动，就会发现它其实依赖一个很少被明说的假设，即系统足够大且足够接近平衡态。':'')+'</div></div>'+
+    (long?'<div class="subhead">深浅两套预览</div><div class="grid"><div class="answer"><b>浅色（当前）</b><p>米白纸底、暖黑字、陶土色按钮。</p></div><div class="answer" style="background:#30302e;border-color:#30302e;color:#faf9f5"><b style="color:#d97757">深色</b><p style="color:#d5d1c7">暖炭黑底、象牙白字，同一个强调色。</p></div></div>':'')+
+    dlg();
+}
+function dlg(){return '<div class="dlg"><button>取消</button><button>应用</button><button class="primary">确定</button></div>';}
+function shell(inner){
+  const c=cur.content, data=C[c];
+  const q=c==='zh'?C.zh.text.slice(0,26)+'…':data.label;
+  return '<div class="window"><div class="topbar">'+
+    '<input class="query" value="'+esc(q)+'" readonly><button class="ibtn go" data-act="query">查询</button>'+
+    '<button class="ibtn" data-act="page:result">结果</button><button class="ibtn" data-page="look">设置</button></div>'+
+    '<div class="meta"><span>clip-llm · 内容解释</span>'+badge(cur.state)+'<span class="sp"></span><span>'+PAGES[cur.page]+'</span></div>'+
+    '<div class="body">'+inner+'</div>'+
+    '<div class="statusline"><span>'+(cur.state==='error'?'! '+STATUS[cur.page]:STATUS[cur.page])+'</span><span class="sp"></span><a>返回</a><a>复制</a><a>关闭</a></div></div>';
+}
+function render(){
+  const c=cur.content,data=C[c];
+  const inner=cur.page==='detect'?detectInner(cur.state,c,data):cur.page==='result'?resultInner(cur.state,c):lookInner(cur.state);
+  document.getElementById('stage').innerHTML=shell(inner);
+  document.getElementById('stageTitle').textContent='方向 01 · 更紧凑 — '+PAGES[cur.page]+' / '+STATES[cur.state];
+  document.getElementById('stageNote').textContent=NOTE[cur.state]+' · 内容：'+(c==='zh'?'中文长句':data.label);
+  document.querySelectorAll('[data-page]').forEach(b=>{if(b.closest('#pg'))b.classList.toggle('on',b.dataset.page===cur.page)});
+  document.querySelectorAll('[data-state]').forEach(b=>{if(b.closest('#st'))b.classList.toggle('on',b.dataset.state===cur.state)});
+  document.querySelectorAll('[data-content]').forEach(b=>{if(b.closest('#ct'))b.classList.toggle('on',b.dataset.content===cur.content)});
+  document.querySelectorAll('#ct button').forEach(b=>b.disabled=cur.page==='look');
+  document.getElementById('stateCards').innerHTML=ORDER.map(s=>'<div class="card'+(s===cur.state?' on':'')+'" data-state="'+s+'"><b>'+STATES[s]+'</b><small>'+NOTE[s]+'</small></div>').join('');
+  document.getElementById('contentCards').innerHTML=Object.keys(C).map(k=>'<div class="card'+(k===cur.content?' on':'')+'" data-content="'+k+'"><b>'+C[k].label+'</b><small>'+(k==='zh'?C[k].text:C[k].cat+' · '+C[k].hint)+'</small></div>').join('');
+}
+let timer=null;
+function goLoading(then){
+  cur.state='loading';render();clearTimeout(timer);
+  timer=setTimeout(()=>{cur.state=then||'normal';render()},1100);
+}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-page],[data-state],[data-content],[data-act]');
+  if(!t)return;
+  if(t.dataset.page){cur.page=t.dataset.page;render();return}
+  if(t.dataset.state){cur.state=t.dataset.state;render();return}
+  if(t.dataset.content){cur.content=t.dataset.content;cur.page=cur.page==='look'?'detect':cur.page;render();return}
+  const a=t.dataset.act;
+  if(a==='query'||a==='retry'){goLoading('normal');return}
+  if(a==='pick'){cur.page='result';cur.state='normal';render();return}
+  if(a&&a.startsWith('page:')){cur.page=a.split(':')[1];cur.state='normal';render()}
+});
+/* 第 2 轮修订：补回功能、顶栏图标化、去掉多余的一行、只留一层滚动 */
+const extraCSS = `
+#stage .window{position:relative}
+#stage .topbar{align-items:center}
+#stage .barsp{flex:1}
+#stage .win-title{font:500 15px var(--serif);color:var(--ink)}
+#stage .iconbtn{width:34px;height:34px;flex:none;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--sub);cursor:pointer;padding:0}
+#stage .iconbtn:hover{border-color:var(--accent);color:var(--accent);background:var(--tint)}
+#stage .iconbtn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+#stage .iconbtn.primary:hover{background:#ad5232;color:#fff}
+#stage .iconbtn svg{width:18px;height:18px}
+#stage .iconmini{width:26px;height:26px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:7px;background:transparent;color:var(--sub);cursor:pointer}
+#stage .iconmini:hover{border-color:var(--accent);color:var(--accent)}
+#stage .iconmini svg{width:15px;height:15px}
+#stage .st-left{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--sub)}
+#stage .statusline .iconbtn{width:24px;height:24px;border:0;background:transparent}
+#stage .statusline .iconbtn svg{width:15px;height:15px}
+#stage .followbar{display:flex;gap:7px;padding:8px 12px;border-top:1px solid var(--line);background:var(--card);flex:none}
+#stage .followbar input{flex:1;min-width:0;height:34px;padding:0 11px;border:1px solid var(--line);border-radius:9px;background:#fff;font:13px var(--sans)}
+#stage .scrollbox{max-height:none;overflow:visible}
+#stage .body{overflow:auto}
+#stage .pop{position:absolute;inset:0;background:rgba(30,26,20,.26);display:flex;align-items:center;justify-content:center;z-index:8}
+#stage .pop-card{width:min(440px,86%);background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:0 18px 40px rgba(0,0,0,.22)}
+#stage .pop-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+#stage .pop-head b{font:500 16px var(--serif)}
+#stage .pop-card p{font-size:12px;color:var(--sub);line-height:1.7}
+#stage .pop-card textarea{width:100%;height:76px;margin-top:9px;padding:9px;border:1px solid var(--line);border-radius:9px;background:#fff;font:13px var(--sans);resize:none}
+#stage .pop-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:10px}
+#stage .pop-actions button{padding:6px 14px;border:1px solid var(--line);border-radius:8px;background:var(--card);font:12px var(--sans);cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+#stage .pop-actions button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+#stage .pop-actions svg{width:14px;height:14px}
+#stage .pop-menu{position:absolute;top:60px;right:14px;min-width:196px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px;box-shadow:0 12px 30px rgba(0,0,0,.18);z-index:9}
+#stage .pop-title{font-size:11px;color:var(--sub);padding:4px 8px 6px}
+#stage .pop-menu button{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:0;border-radius:7px;background:transparent;font:12px var(--sans);color:var(--ink);cursor:pointer;text-align:left}
+#stage .pop-menu button:hover{background:var(--tint)}
+#stage .pop-menu svg{width:15px;height:15px}
+#stage .toast{position:absolute;bottom:46px;left:50%;transform:translateX(-50%);background:#2f2c27;color:#faf9f5;padding:7px 14px;border-radius:20px;font-size:12px;z-index:10;white-space:nowrap}
+`;
+const stEl=document.createElement('style'); stEl.textContent=extraCSS; document.head.appendChild(stEl);
+const I={
+  find:'<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/>',
+  globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>',
+  gear:'<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2.3M12 19.2v2.3M2.5 12h2.3M19.2 12h2.3M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6"/>',
+  image:'<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M4 17l5-5 4 4 3-3 4 4"/>',
+  pencil:'<path d="M4 20h4L20 8l-4-4L4 16v4z"/><path d="M14 6l4 4"/>',
+  down:'<path d="M6 9l6 6 6-6"/>',
+  back:'<path d="M19 12H5"/><path d="M11 6l-6 6 6 6"/>',
+  copy:'<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+  close:'<path d="M6 6l12 12M18 6L6 18"/>',
+  send:'<path d="M4 12l16-8-6 16-3-6-7-2z"/>',
+  refresh:'<path d="M20 11a8 8 0 1 0-2 6"/><path d="M20 5v6h-6"/>',
+  keyboard:'<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'
+};
+const svg=k=>'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(I[k]||I.find)+'</svg>';
+const ib=(act,k,title,primary)=>'<button class="iconbtn'+(primary?' primary':'')+'" data-act2="'+act+'" title="'+esc(title)+'" aria-label="'+esc(title)+'">'+svg(k)+'</button>';
+let pop=q0.get('pop')||null, toast='', busyTimer=null, toastTimer=null;
+function patch(){
+  const w=document.querySelector('#stage .window'); if(!w)return;
+  const bar=w.querySelector('.topbar'); if(!bar)return;
+  const qi=bar.querySelector('.query'), q=qi?qi.value:'', look=cur.page==='look';
+  bar.innerHTML=(look?'<span class="win-title">clip-llm · 设置</span><span class="barsp"></span>':'<input class="query" value="'+esc(q)+'" readonly>')+
+    (look? ib('refresh','refresh','重新读取设置')+ib('closepop','close','关闭设置窗口') :
+      ib('query','find','查询（回车同效）',true)+ib('search','globe','用浏览器搜索当前内容')+
+      ib('newtab','plus','在新标签查询（Ctrl+T）')+ib('image','image','图片识别（Ctrl+Alt+S）')+
+      ib('input','keyboard','独立输入框（Ctrl+I）')+ib('settings','gear','设置（F3）'));
+  const meta=w.querySelector('.meta'); if(meta)meta.remove();
+  w.querySelectorAll('.free').forEach(x=>x.remove());
+  w.querySelectorAll('.headline .mini').forEach(b=>{
+    const t=b.textContent.trim();
+    if(t.indexOf('其他')>=0){b.dataset.act2='other';b.className='iconmini';b.innerHTML=svg('down');b.title='展开其他可选类别'}
+    else if(t==='自定义'){b.dataset.act2='custom';b.className='iconmini';b.innerHTML=svg('pencil');b.title='自定义：写一句你想怎么解释'}
+  });
+  if(cur.page==='result'&&!w.querySelector('.followbar')){
+    const fb=document.createElement('div'); fb.className='followbar';
+    fb.innerHTML='<input placeholder="针对这次结果继续追问…">'+ib('sendfollow','send','发送追问（回车）',true);
+    const sl0=w.querySelector('.statusline'); if(sl0)w.insertBefore(fb,sl0);
+  }
+  const sl=w.querySelector('.statusline');
+  if(sl)sl.innerHTML='<span class="st-left"><span class="badge b-'+cur.state+'">'+STATES[cur.state]+'</span>'+esc(STATUS[cur.page])+'</span><span class="barsp"></span>'+
+    ib('back','back','返回初判（Alt+Left）')+ib('copy','copy','复制当前结果全文')+ib('closepop','close','关闭窗口（Esc）');
+  w.querySelectorAll('.pop,.toast').forEach(x=>x.remove());
+  if(pop==='free'){
+    const p=document.createElement('div'); p.className='pop';
+    p.innerHTML='<div class="pop-card"><div class="pop-head"><b>自定义</b>'+ib('closepop','close','关闭')+'</div>'+
+      '<p>写一句你想怎么解释，或把提示词直接贴进来。关闭后回到初判，不改动原来的查询内容。</p>'+
+      '<textarea placeholder="例如：只讲它在常温下的反应，别写历史"></textarea>'+
+      '<div class="pop-actions"><button data-act2="closepop">取消</button><button class="primary" data-act2="sendfree">'+svg('send')+' 发送</button></div></div>';
+    w.appendChild(p);
+  }else if(pop==='search'){
+    const p=document.createElement('div'); p.className='pop-menu';
+    p.innerHTML='<div class="pop-title">用浏览器搜索当前内容</div>'+
+      ['Google','Bing','百度','DuckDuckGo'].map(n=>'<button data-act2="provider" data-name="'+n+'">'+svg('globe')+n+'</button>').join('');
+    w.appendChild(p);
+  }
+  if(toast){const t=document.createElement('div');t.className='toast';t.textContent=toast;w.appendChild(t)}
+}
+const _render=render;
+render=function(){_render();patch();};
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-act2]'); if(!b)return;
+  const a=b.dataset.act2;
+  const flash=m=>{toast=m;pop=null;render();clearTimeout(toastTimer);toastTimer=setTimeout(()=>{toast='';render()},1700)};
+  if(a==='query'||a==='sendfree'||a==='sendfollow'){
+    pop=null;cur.state='loading';render();clearTimeout(busyTimer);
+    busyTimer=setTimeout(()=>{cur.state='normal';render()},1100);return;
+  }
+  if(a==='custom'||a==='input'){pop='free';render();return}
+  if(a==='search'){pop=pop==='search'?null:'search';render();return}
+  if(a==='settings'){cur.page='look';pop=null;render();return}
+  if(a==='back'){cur.page='detect';pop=null;render();return}
+  if(a==='closepop'){pop=null;if(cur.page==='look')cur.page='detect';render();return}
+  if(a==='other'){flash('其他可选类别：化学物质 / LaTeX 公式 / 中文 / 英语');return}
+  if(a==='copy'){flash('已复制当前结果全文');return}
+  if(a==='newtab'){flash('已新建标签页（Ctrl+T）');return}
+  if(a==='image'){flash('图片识别：读取剪贴板图片 → 转为查询内容');return}
+  if(a==='refresh'){flash('已重新读取设置');return}
+  if(a==='provider'){flash('用 '+b.dataset.name+' 搜索当前内容');return}
+});
+render();
+</script>
+</body>
+</html>
