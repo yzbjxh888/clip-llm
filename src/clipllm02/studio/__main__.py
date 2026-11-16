@@ -23,7 +23,7 @@ from pathlib import Path
 GS_SCHEMA = "org.gnome.settings-daemon.plugins.media-keys"
 GS_PATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clipllm02-vision/"
 
-BUILD = "2026-11-16-review-fixes"  # 每轮修复递增；启动横幅与托盘 tooltip 均显示
+BUILD = "2026-11-17-readme-dark-settings"  # 每轮修复递增；启动横幅与托盘 tooltip 均显示
 
 
 def check_single_instance() -> None:

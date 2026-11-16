@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QKeySequence
+from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout,
@@ -61,7 +61,21 @@ QLabel#sectionHint {{ color:{t['text_variant']};
   font-size:{TYPO_BODY_SM[0]}px; }}
 QLabel#statusHint {{ color:{t['error']}; font-size:{TYPO_BODY_SM[0]}px; }}
 QTabBar::tab {{ font-size:{TYPO_BODY_SM[0]}px; }}
+QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {{
+  background:{t['background']};
+  }}
 """
+
+
+def apply_settings_palette(widget, dark: bool) -> None:
+    """深色主题下 QSS 改不动 QDialog 的底色，必须同步设置调色板。"""
+    t = tokens(dark)
+    palette = widget.palette()
+    palette.setColor(QPalette.Window, QColor(t["background"]))
+    palette.setColor(QPalette.WindowText, QColor(t["text"]))
+    palette.setColor(QPalette.Base, QColor(t["surface_lowest"]))
+    palette.setColor(QPalette.Text, QColor(t["text"]))
+    widget.setPalette(palette)
 
 
 def parse_includes(text: str) -> list[dict]:
@@ -111,6 +125,7 @@ class SettingsDialog(QDialog):
         self.data = copy.deepcopy(settings.as_dict())
         self._dark = bool(self.data.get("desktop_dark_theme", False))
         self.setStyleSheet(build_qss(self._dark) + settings_qss(self._dark))
+        apply_settings_palette(self, self._dark)
         self.data.setdefault("intents", [])
         self.data.setdefault("route_prompts", {})
         self._legacy = load_legacy()
@@ -1566,6 +1581,7 @@ class SettingsDialog(QDialog):
         save_config(self.data)
         self._dark = self.dark_check.isChecked()
         self.setStyleSheet(build_qss(self._dark) + settings_qss(self._dark))
+        apply_settings_palette(self, self._dark)
         self.status_hint.setText("")
         self.applied.emit(copy.deepcopy(self.data))
         return True

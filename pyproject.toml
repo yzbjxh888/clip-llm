@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clipllm02"
-version = "0.2.27"
+version = "0.2.28"
 description = "clip-llm 0.2 可插拔内容解释与路由引擎：核心骨架（纯标准库）"
 readme = "README.md"
 requires-python = ">=3.10"

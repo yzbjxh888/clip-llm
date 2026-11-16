@@ -21,7 +21,7 @@ from .prompts import (
 from .settings import Settings, load_defaults, load_settings, structure_signature, validate
 from .suggest import build_menu, disabled_domains, resolve_domains, suggest
 
-__version__ = "0.2.27"
+__version__ = "0.2.28"
 
 __all__ = [
     "AssetRef", "DomainCandidate", "FeatureSet", "InputEnvelope", "IntentOption",

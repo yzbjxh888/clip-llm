@@ -51,6 +51,7 @@ class Issue1Escape(unittest.TestCase):
         self.assertIn("Esc", sequences)   # QKeySequence 归一化
         self.assertIn(self.window.hotkeys()["dismiss"], ("Escape", "Esc"))
         changed = load_defaults()
+        changed.data["hotkeys"] = dict(DEFAULT_HOTKEYS)
         changed.data["hotkeys"]["dismiss"] = "Ctrl+Q"
         self.window.set_settings(changed)
         sequences = [str(s.key().toString()) for s in self.window._shortcuts]

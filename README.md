@@ -1,66 +1,105 @@
-# clip-llm 0.2
-
-一个本地优先的桌面词典式**内容解释工具**：复制或选中一段文字，窗口自动弹出「初判」，由你决定要看哪一面，再请求大模型给出结构化解释。支持多轮追问、把一次会话落成一篇 Markdown 笔记、图片/截图识别、网页搜索与可插拔的提示词模板。
-
-当前版本 `0.2.27`，基于 PySide6，主要面向 Linux 桌面（X11 / Wayland）。
-
-> 设计原则：**分类器只缩小选项空间，用户决定解释意图，模型只负责执行。**
-> 本地初判和菜单不消耗任何 token；不填模型配置时，软件只显示本地预览、不发网络请求。
+<div align="center">
+  <img src="assets/png/clipllm02-128.png" width="96" alt="clip-llm icon">
+  <h1>clip-llm</h1>
+  <p><strong>复制一段内容，先看懂它，再决定让模型解释哪一面。</strong></p>
+  <p>本地优先的 Linux 桌面词典式内容解释工具 · 双层界面 · 零 token 初判</p>
+  <p>
+    <a href="https://github.com/yzbjxh888/clip-llm/releases/latest"><img src="https://img.shields.io/badge/version-0.2.28-7aa7ff" alt="version"></a>
+    <img src="https://img.shields.io/badge/python-3.10%2B-green" alt="python">
+    <img src="https://img.shields.io/badge/platform-linux-orange" alt="platform">
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="license"></a>
+  </p>
+</div>
 
 ---
 
-## 它怎么工作
+## 一句话理解
 
-```text
-复制 / 截图
-   ↓
-本地特征 + 分级拦截（零 token）
-   ↓
-第一层「初判」：领域候选 / 查询方式 / 其他角度 / 自由输入 / 网页搜索
-   ↓ 用户选择
-组装提示词 → 请求模型 → 校验与渲染
-   ↓
-第二层「结果」：结构化字段、对话式排版、可继续追问
-   ↓
-一次会话写进一篇 Markdown 笔记（供 Obsidian / Logseq 建图谱）
-```
+你复制文字或图片，`clip-llm` 会先在**本地**判断它大概是什么、列出针对它的几种解释方式；你点哪一种，才把组装好的提示词发给**你自己配置的模型**。结果以结构化卡片呈现，还能继续追问、存成 Markdown 笔记。
 
-窗口分两层：第一层是初判菜单，第二层是结果与追问。`Esc` 在结果页先回初判，在初判页才关闭窗口。
+> 设计原则：**分类器只缩小选项空间，用户决定解释意图，模型只负责执行。**
+> 初判和菜单完全在本地完成、不消耗 token；不填模型配置也能打开软件看界面和本地预览。
+
+---
+
+## 它长什么样
+
+### 1. 第一层：复制后自动初判
+
+复制 `NaCl`、`E=mc²`、英文短语或一段中文，窗口自动弹出。它先给出类别，再把该类别下**全部启用的查询方式**列出来——不是只给一个“问模型”的按钮。
+
+<p align="center">
+  <img src="assets/screenshots/01-first-layer.png" width="760" alt="第一层初判界面">
+</p>
+<p align="center"><em>复制 <code>NaCl</code> 后：化学物质类别 + 4 条专属查询方式 + 其他解读角度</em></p>
+
+### 2. 第二层：结构化结果与追问
+
+选一种解释方式后才请求模型。返回的 JSON / Markdown 会被渲染成表格、列表、定义卡片和公式；结果页底部可以直接追问，上下文自动带上。
+
+<p align="center">
+  <img src="assets/screenshots/02-second-layer.png" width="760" alt="第二层结果界面">
+</p>
+<p align="center"><em>同一标签页内从初判切到结果，不另开窗口；追问仍在这张卡片下方继续</em></p>
+
+### 3. 设置：一切都可插拔
+
+提示词模板、查询方式、其他视角、拦截规则、搜索源、快捷键、主题、知识库目录都在设置里。改完保存，已打开的标签会就地刷新。
+
+<p align="center">
+  <img src="assets/screenshots/03-settings.png" width="760" alt="设置界面：查询方式按模板分组">
+</p>
+<p align="center"><em>查询方式按模板分组；每条都能改名、改提示词、换主路由、改领域、排序、启停</em></p>
+
+---
+
+## 为什么值得试试
+
+| | 传统做法 | clip-llm |
+|---|---|---|
+| 初判 | 每次都把原文丢给模型问“这是什么” | 本地特征 + 规则先判，**零网络、零 token** |
+| 解释角度 | 一个通用提示词，答案千篇一律 | 11 套模板 / 41 条查询方式，按类别给你不同切面 |
+| 选择权 | 模型决定怎么答 | 你先看初判，再点想要的那一种 |
+| 结果 | 一坨 Markdown / 纯文本 | 结构化卡片、公式、表格、追问气泡 |
+| 后续 | 复制粘贴到笔记软件 | 一次会话直接落成带 YAML frontmatter 的 Markdown |
+| 模型 | 绑定某家服务 | 任意 OpenAI 兼容接口；文本与视觉可分别配置 |
 
 ---
 
 ## 主要功能
 
-| 功能 | 说明 |
-|---|---|
-| 剪贴板监听 | 文本与图片两路，X11 用 `QClipboard.dataChanged`、Wayland 用常驻 `wl-paste --watch`；复制后自动弹窗 |
-| 本地初判 | 34 个具名字符特征 + 7 个领域候选 + 分级拦截，全部本地计算，零 token |
-| 查询方式 | 11 套提示词模板 / 41 条查询方式，可在设置里改名、改提示词、启停、新增 |
-| 多轮追问 | 结果页底部追问，带上一轮问答作为上下文；追问用自由作答而不是重复 JSON 字段 |
-| 结果排版 | JSON 与 Markdown 双通道，公式转 Unicode，表格、列表、气泡；深浅主题与字号可调 |
-| 知识库 | 一次会话落成一篇带 YAML frontmatter 的 Markdown（`session` / `rounds` / `created` / `updated`），默认按模板分文件夹 |
-| 结果缓存 | 磁盘缓存（`~/.cache/clip-llm02/results.json`），键覆盖提示词、意图、呈现、规则集与输入摘要 |
-| 两级拦截 | `BLOCK / ALLOW` 两级，出厂 14 条规则；设置页勾选＝拦截、取消勾选＝放行 |
-| 网页搜索 | 7 个出厂搜索源，顶栏菜单与结果页「选中文本」右键都能用；设置页可增删、改名、改网址 |
-| 图片识别 | 剪贴板图片 / 系统截图 → 视觉模型 → 识别出的文字回灌初判；`Ctrl+Alt+S` |
-| 设置 | 8 个页签、草稿事务、改完立即生效、10 组可改快捷键、深浅主题、知识库目录 |
-| 打包 | `scripts/build_deb.sh` 产出自带 venv 的 `.deb`，安装到 `/opt/clipllm02` |
-
-出厂网页搜索：百度、百度百科、Google、Google 搜维基百科、Google 搜 alphaXiv、arXiv、Google 学术。网址支持 `%s` 和 `{q}` 两种占位符。
+- **本地初判**：34 个具名字符特征、7 个领域候选、14 条 `BLOCK / ALLOW` 策略，全部本地计算。
+- **双层界面**：一个主窗口、一个标签页里完成“初判 → 结果 → 追问”，`Esc` 一层层返回。
+- **可插拔提示词**：11 套模板；9 套注入旧脚本完整提示词；每条查询方式可自带 JSON 字段清单。
+- **多轮追问**：结果页底部直接问，自动带上一轮问答作为上下文。
+- **结果排版**：JSON / Markdown 双通道，LaTeX 转 Unicode，表格、列表、气泡、深浅主题、字号可调。
+- **知识库**：一次会话写成一篇 Markdown（`session` / `rounds` / `created` / `updated`），默认按模板分文件夹，给 Obsidian / Logseq 建图谱用。
+- **结果缓存**：磁盘缓存键覆盖提示词、意图、呈现、规则集与输入摘要；改字体/主题不必重新请求。
+- **图片识别**：剪贴板图片 / 系统截图 → 视觉模型 → 识别结果回灌初判，`Ctrl+Alt+S`。
+- **网页搜索**：7 个出厂搜索源，顶栏与结果页选中文本右键都能用，可增删改。
+- **键盘友好**：10 组快捷键全部可在设置里改，冲突保存时拦截。
 
 ---
 
-## 安装
+## 快速开始
 
-### 方式一：`.deb`（推荐给桌面用户）
+### 方式一：下载 `.deb`（推荐）
+
+从 [Releases](https://github.com/yzbjxh888/clip-llm/releases/latest) 下载 `clipllm02_0.2.28_amd64.deb`：
 
 ```bash
-sudo dpkg -i clipllm02_0.2.27_amd64.deb
+sudo dpkg -i clipllm02_0.2.28_amd64.deb
 clipllm02-doctor          # 解释器 / 导入 / 依赖自检
 clipllm02-desktop         # 启动
 ```
 
-包内自带最小 venv（仅 `PySide6-Essentials`），源码放在 `/opt/clipllm02/src`，启动器用 `PYTHONPATH` 指向它，不依赖 editable 安装记录。
+包内自带最小 venv（仅 `PySide6-Essentials`），源码在 `/opt/clipllm02/src`，启动器用 `PYTHONPATH` 指过去，不依赖 editable 安装记录。
+
+校验值（可选）：
+
+```text
+SHA256 a8482edabab5209c0726360e0fcef2db5af0333d3ba6de57c6dff0a569bc9f73
+```
 
 ### 方式二：从源码
 
@@ -71,23 +110,26 @@ git clone git@github.com:yzbjxh888/clip-llm.git
 cd clip-llm
 bash scripts/setup.sh                 # 重建最小 venv + 跑回归测试
 .venv/bin/clipllm02-desktop           # 启动
-
-# 或者手动
-python3 -m venv .venv
-.venv/bin/pip install -e '.[desktop]'
-PYTHONPATH=src .venv/bin/python -m unittest discover -s tests
 ```
 
 打包与快照：
 
 ```bash
 bash scripts/backup.sh      # 不含 venv 的源码快照（dist/）
-bash scripts/build_deb.sh   # 生成 dist/clipllm02_0.2.27_amd64.deb
+bash scripts/build_deb.sh   # 生成 dist/clipllm02_0.2.28_amd64.deb
 ```
 
-### 配置模型
+---
 
-启动后按 `F3` 打开「模型与图片」页，填写三项：**API 地址、API Key、模型名称**（视觉模型可单独填，留空复用文本配置）。任一项留空都不会发送网络请求，第二层只显示本地查询预览——可以放心先体验界面。
+## 配置模型：不绑定 Gemini
+
+启动后按 `F3` 打开「模型与图片」页，填写三项：**API 地址、API Key、模型名称**。软件只要求 OpenAI 兼容的 `/chat/completions` 接口，**不绑定任何厂商**。
+
+- 如果 Gemini 高峰期不可用，换成任何兼容端点与 Key 即可，**无需改代码、无需重装**。
+- 视觉模型可单独填；留空则复用文本模型的地址与 Key。
+- 任一项留空都不会发送网络请求，第二层只显示本地查询预览——可以放心先体验界面。
+
+配置存放位置：
 
 | 位置 | 用途 |
 |---|---|
@@ -108,7 +150,7 @@ bash scripts/build_deb.sh   # 生成 dist/clipllm02_0.2.27_amd64.deb
 | `Ctrl+T` / `Ctrl+W` | 新标签 / 关闭标签 |
 | `Ctrl+Tab` | 切换标签 |
 | `Ctrl+R` | 重新查询 |
-| `Ctrl+I` | 独立输入框（主进程禁用了 text-input，中文输入走独立进程） |
+| `Ctrl+I` | 独立输入框（中文输入走独立进程） |
 | `Ctrl+Alt+S` | 图片 / 截图识别 |
 | `Ctrl+Shift+G` | 网页搜索 |
 | `F3` | 设置 |
@@ -117,93 +159,25 @@ bash scripts/build_deb.sh   # 生成 dist/clipllm02_0.2.27_amd64.deb
 
 ---
 
-## 项目结构
+## 隐私
 
-```text
-├── spec/                     出厂配置（settings / policy / intents / search providers / JSON Schema）
-│   └── legacy_assets.json    0.1 旧脚本迁移来的 9 套完整提示词
-├── src/clipllm02/
-│   ├── models.py             不可变数据对象
-│   ├── features.py           字符特征注册表 + 条件树求值
-│   ├── classify.py           类别初判规则
-│   ├── policy.py             分级拦截引擎
-│   ├── suggest.py            领域候选与菜单构建
-│   ├── prompts.py            提示词组合、输出契约、追问自由作答
-│   ├── settings.py           配置深合并 / 校验 / 结构签名
-│   ├── json_render.py        JSON / Markdown → Qt Rich Text
-│   ├── modality.py           模态仲裁与资产存储（见「未实现」）
-│   ├── desktop/              窗口基座、网关、缓存、classic 兼容层
-│   └── studio/               统一桌面应用（默认入口）
-│       ├── app.py            主控与请求调度
-│       ├── main_window.py    查询栏 + 多标签
-│       ├── query_tab.py      初判 / 结果 / 追问
-│       ├── library.py        知识库 Markdown 落盘
-│       ├── vision.py         图片与截图识别
-│       ├── clipboard_monitor.py
-│       └── settings_dialog.py
-├── docs/                     规格与设计决策（01–10）
-├── design/sketches/          早期布局草稿
-├── scripts/                  setup / backup / build_deb
-└── tests/                    370+ 单元测试
-```
+- 不上传遥测、不写远端日志；只有你主动选了查询方式，才会请求你自己配置的模型接口。
+- API Key 只存在本机 `~/.config/clip-llm02/settings.json`，既不进仓库也不进 `.deb`。
+- 知识库笔记与结果缓存都写在本机指定目录；分享机器前请自行清理 `~/.config` 与 `~/.cache`。
 
 ---
 
-## 已知不足
+## 当前边界（如实说）
 
-这一节是如实记录，不是客套。**如果你打算基于它二次开发，请先看这里。**
+这个项目仍在打磨，下面几点先讲清楚，免得你踩坑：
 
-### 1. 拦截逻辑还不够清晰
+- 类别初判仍是 `classify.py` 里的有序规则表 + veto，不是数据驱动条件树；改规则需要改代码。
+- 领域候选分数来自出厂常量，尚未做证据加权校准；`physics` 目前没有独立模板。
+- `dedup` / `quota` 在部分入口尚未统一接线；拦截记录目前主要在 classic 链路完整落盘。
+- 本地图片文件选择入口还没做；视觉输入目前是剪贴板图片与系统截图。`interactive` / `annotate` 仍是标记位，没有专用渲染分支。
+- `docs/` 是规格先行产物，个别章节描述的是目标而非现状；`docs/07_DECISIONS.md` 记录了哪些设计已被取代。
 
-- 规则条数与级别口径已按 ADR-13 对齐：出厂 **14 条**、仅 `BLOCK/ALLOW`；`docs/02` 第 4 节明确标为历史参考。
-- `dedup` 规则是**死规则**：`policy.py` 需要调用方传 `runtime["is_duplicate"]`，而全仓没有任何调用方传；去重实际由各入口各自实现。
-- `quota`（每日限额）只在 Studio 链路生效；`cli.py`、`serve.py`、classic 桌面版调用 `preflight()` 时不传 runtime，限额永不触发。
-- `levels` 行为表运行时只读了 `request`，`popup` / `banner` / `log` 等字段没接线；规则里的 `locked` 只用于配置校验，不参与求值。
-- 自定义敏感正则已跟随 `secret` 规则的级别、开关与多行代码豁免；纯图片信封不再被文本正则误拦。
-- `BLOCK` 在 Studio 里静默丢弃并只写诊断日志，不写脱敏拦截记录；文档描述的「只写脱敏记录」只在 classic 版成立。
-- 求值实现是**遍历全部规则收集命中、最后取最高级**，不是文档写的「BLOCK 优先短路」。
-
-### 2. 拦截之后的分类器与字符特征也不够清晰
-
-- `features.py` 的 34 个具名特征、条件树（`all/any/not` + 9 种比较）确实是数据驱动的；但**类别初判本身是硬编码 Python**：`classify.py` 里 12 条 lambda 规则表 + veto + 中文类型的 if 链，改规则需要改代码。文档里「所有组合逻辑都是数据、改规则不改代码」对这部分不成立。
-- 领域候选的分数直接取自 `builtin_settings.json` 里写死的常量（如 `math 0.92`），**没有按证据动态评分，也没有测试集校准**；`detection.score_mode` 运行时不读。
-- 领域亲和表 `NEAR_DOMAINS` 硬编码且不含 `physics`，但文档举例说 `E=mc²` 会并列物理角度。
-- 部分阈值散落或缺失：`cn_dominant_min` 在两个文件各写一次默认值；`cn_sentence_min_len` 根本不在出厂配置里，永远用代码默认值；`thresholds.cn_mixed_max`、`cn_max_chars` 运行时 0 次引用。
-- 文档示例里的 `char_count`、`cn_para_route`、`cn_sent_route` 等特征名**不在** `FEATURES` 注册表里，写进条件树会被判假；`spec/legacy_assets.json` 还留着一批引用这些旧名字的遗留规则数据，启动时并不加载。
-- `_is_cli()` 用 `shutil.which()` 判断，结果随本机 PATH 变化，同一段文字在不同机器上可能初判不同。
-- `use_legacy_template` 字段在配置里存在，但 `IntentOption` 不解析它，相关排序分支恒为假。
-- 排查工具 `explain_text()` / `classify_intent()` 已实现但没接到 CLI，文档里写的排查入口实际不可用。
-
-### 3. 未实现 / 未接线的功能
-
-| 项 | 现状 |
-|---|---|
-| 模态仲裁 / `AssetStore` | 实现完整（`modality.py`），但桌面链路从不调用；所有输入都是纯文本 `InputEnvelope`，`assets` 恒空，图片领域永不入选，`image_text_conflict` / `modality_window_ms` 不生效；文档写的 TTL / LRU 清理也没有 |
-| 本地图片文件选择 | `read_image_file()` 已实现，但 UI 没有入口；`QFileDialog` 在 `app.py` 里只有 import，没有调用。文档声称支持「图片文件」，实际只有剪贴板图片与截图 |
-| 部分图片配置 | `auto_recognize_in_menu` 只用于「menu 模式下为 true 就报配置错误」，运行时不读；`quick_preset_enabled`、`asset_ttl_days` 运行时 0 次读取；只有 `max_bytes` 生效 |
-| 呈现形态 | `static / table / interactive / annotate` 四种里，后两种只是标记，`json_render.py` 没有专用渲染分支 |
-| `physics` 模板 | 领域有 `physics`，模板没有；两条物理意图挂在 `latex` 模板下靠专属提示词区分 |
-| 模板覆盖 | 11 套模板里只有 9 套注入了旧脚本完整提示词，`chem_substance` 与 `image` 两套仍用出厂短版 |
-| 多输入通道 | `docs/02` 描述的五条输入通道与「图片 → 写回剪贴板 → 内部提交」链路没有对应实现，实际是 Qt + `wl-paste` 两路 |
-| 其它 | 设置页 `SWITCH_LABELS` 是死代码；`conflict_policy` / `prompt_version` / `schema_version` 只进数据不参与决策；`allowed_route_ids` 多选预留 |
-
-### 4. 界面与体验仍在打磨
-
-设置页刚做过一轮统一（分区标题、字号层级、搜索源表格），但提示文案、密度和深浅主题的细节还需要实机打磨；等待态目前只有一句短话，没有进度或流式输出；结果缺少「由模型生成、请核对」这类不确定性提示与停止/重生成入口；空标签页的首次引导也还比较简单。
-
-### 5. 文档与实现有出入
-
-`docs/` 是规格先行的产物，部分章节描述的是设计而非现状（规则条数、输入通道、图片文件入口、拦截记录字段等）。以本节和源码为准；`README` 早期版本里「留待迁移阶段实现」的清单已经过时。
-
----
-
-## 路线图（暂定）
-
-1. 把类别初判规则从 Python 硬编码迁到配置化条件树，补齐特征名与文档示例的一致性。
-2. 打通拦截链路：`dedup` / `quota` / `levels` 行为表在各入口一致生效，统一拦截记录。
-3. 接上模态仲裁与本地图片文件入口，清理未使用的配置字段。
-4. 领域评分改成可校准的证据加权；补 `physics` 模板与剩余 5 套完整提示词。
-5. 结果页补不确定性提示、停止/重生成、长结果的分隔与留白。
+详细决策见 [docs/07_DECISIONS.md](docs/07_DECISIONS.md)，图片链路见 [docs/11_IMAGE_PIPELINE.md](docs/11_IMAGE_PIPELINE.md)。
 
 ---
 
@@ -217,13 +191,27 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests   # 370+ 用例
 
 核心库（`models` / `features` / `policy` / `settings` / `prompts`）不依赖 Qt，可以单独用标准库跑。诊断开关 `CLIPLLM_DIAG=1` 会在终端打印链路日志。
 
----
+项目结构：
 
-## 隐私
-
-- 软件不上传遥测、不写日志到远端；只有你主动选择查询方式时才会请求你自己配置的模型接口。
-- API Key 只存在本机 `~/.config/clip-llm02/settings.json`，既不进仓库也不进 `.deb`。
-- 知识库笔记与结果缓存都写在你本机指定的目录；分享机器前请自行清理 `~/.config` 与 `~/.cache`。
+```text
+├── spec/                     出厂配置（settings / policy / intents / search providers / JSON Schema）
+│   └── legacy_assets.json    0.1 旧脚本迁移来的 9 套完整提示词
+├── src/clipllm02/
+│   ├── models.py             不可变数据对象
+│   ├── features.py           字符特征注册表 + 条件树求值
+│   ├── classify.py           类别初判规则
+│   ├── policy.py             两级拦截引擎
+│   ├── suggest.py            领域候选与菜单构建
+│   ├── prompts.py            提示词组合、输出契约、追问自由作答
+│   ├── settings.py           配置深合并 / 校验 / 结构签名
+│   ├── json_render.py        JSON / Markdown → Qt Rich Text
+│   ├── desktop/              窗口基座、网关、缓存、classic 兼容层
+│   └── studio/               统一桌面应用（默认入口）
+├── docs/                     规格与设计决策（01–11）
+├── assets/screenshots/       README 使用的真实界面截图
+├── scripts/                  setup / backup / build_deb
+└── tests/                    370+ 单元测试
+```
 
 ---
 
