@@ -165,15 +165,14 @@ class TestSettingsWindow(unittest.TestCase):
         window.applied.connect(emitted.append)
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "settings.json"
-            with patch("clipllm02.desktop.settings_window.user_settings_path",
-                       return_value=target):
-                window.spin_recommended.setValue(3)
+            with patch("clipllm02.studio.config.config_path", return_value=target):
+                window.cb_hide_preview.setChecked(True)
                 self.assertTrue(window._apply())
                 self.assertTrue(target.exists())
                 data = json.loads(target.read_text(encoding="utf-8"))
-                self.assertEqual(data["menu"]["recommended_limit"], 3)
+                self.assertTrue(data["desktop_hide_preview"])
         self.assertEqual(len(emitted), 1)
-        self.assertEqual(emitted[0]["menu"]["recommended_limit"], 3)
+        self.assertTrue(emitted[0]["desktop_hide_preview"])
         window.close()
 
     def test_intent_checkbox_updates_draft(self):

@@ -11,10 +11,13 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from clipllm02 import InputEnvelope, build_menu, preflight, suggest  # noqa: E402
+from clipllm02 import (  # noqa: E402
+    InputEnvelope, build_menu, load_defaults, preflight, suggest,
+)
 from clipllm02.studio.app import StudioApp  # noqa: E402
 from clipllm02.studio.config import (  # noqa: E402
-    CONFIG_VERSION, DEFAULT_VISION_PROMPT, load_config, load_legacy, save_config,
+    CONFIG_VERSION, DEFAULT_VISION_PROMPT, load_config, load_legacy,
+    save_config, settings_from_data,
 )
 from clipllm02.studio.json_render import (  # noqa: E402
     render_json_result, render_local_preview, render_notice,
@@ -31,7 +34,7 @@ def setUpModule():
 
 
 def context(text="NaCl"):
-    settings = load_config()
+    settings = load_defaults()
     env = InputEnvelope.for_text(text, source="test")
     policy = preflight(env, settings)
     s = suggest(env, policy, settings)
@@ -70,7 +73,7 @@ class TestJsonRender(unittest.TestCase):
 
     def test_local_preview_never_claims_network(self):
         from clipllm02.prompts import compose_prompt
-        settings = load_config()
+        settings = load_defaults()
         composed = compose_prompt(settings.intent("chem.naming"), settings)
         out = render_local_preview(composed, "NaCl")
         self.assertIn("未发送任何网络请求", out)
@@ -91,7 +94,9 @@ class TestConfigAndAssets(unittest.TestCase):
                            15000)
 
     def test_config_has_legacy_prompts_and_vision_prompt(self):
-        settings = load_config()
+        data = load_defaults().as_dict()
+        data["config_version"] = CONFIG_VERSION
+        settings = settings_from_data(data)
         self.assertEqual(settings.get("config_version"), CONFIG_VERSION)
         self.assertGreater(len(settings.routes["en_word"]["prompt"]), 1000)
         self.assertIn("LaTeX", str(settings.get("desktop_vision_prompt")))
@@ -100,7 +105,7 @@ class TestConfigAndAssets(unittest.TestCase):
     def test_stale_config_keeps_user_prompt_overrides(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
-            data = load_config().as_dict()
+            data = load_defaults().as_dict()
             data["config_version"] = 1
             data["desktop_font_size"] = 20
             for item in data["intents"]:
@@ -118,7 +123,7 @@ class TestConfigAndAssets(unittest.TestCase):
     def test_save_config_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
-            data = load_config().as_dict()
+            data = load_defaults().as_dict()
             data["desktop_font_size"] = 18
             with patch("clipllm02.studio.config.config_path", return_value=path):
                 save_config(data)
@@ -192,7 +197,7 @@ class TestQueryTabTwoLayers(unittest.TestCase):
 
 class TestMainWindowTabs(unittest.TestCase):
     def setUp(self):
-        self.settings = load_config()
+        self.settings = load_defaults()
         self.window = MainWindow(self.settings)
 
     def test_new_tab_and_close(self):
@@ -227,7 +232,7 @@ class TestMainWindowTabs(unittest.TestCase):
 
 class TestStudioApp(unittest.TestCase):
     def setUp(self):
-        settings = load_config()
+        settings = load_defaults()
         # 测试固定走「本地预览」路径，不依赖用户是否配置了真实模型
         settings.data["desktop_api_url"] = ""
         settings.data["desktop_api_key"] = ""
@@ -287,15 +292,20 @@ class TestStudioApp(unittest.TestCase):
         # 首条是复用模板的 legacy（提示词为空是预期），另选一条专属的验证可编辑
         dialog._load_intent("chem.naming")
         self.assertTrue(dialog.intent_prompt.toPlainText())
-        self.assertIn("LaTeX", dialog.vision_prompt.toPlainText())
-        # 模板下拉列出全部路由（旧脚本 9 套 + 出厂其余路由），且可增删
+        # 图片侧只有一条模板：选中「图片识别」后能直接改它的兜底提示词
+        # （提示词允许留空，这里只验控件可用，不断言具体文案）
+        dialog.route_combo.setCurrentIndex(
+            dialog.route_combo.findData("image"))
+        self.assertEqual(dialog.route_combo.currentData(), "image")
+        self.assertTrue(dialog.route_prompt.isEnabled())
+        # 下拉列出全部模板（文本 + 图片分组），且可增删
         self.assertGreaterEqual(dialog.route_combo.count(), 9)
         dialog.close()
 
 
 class TestVisionIntegration(unittest.TestCase):
     def test_no_model_means_no_network(self):
-        settings = load_config()
+        settings = load_defaults()
         # 视觉模型优先读 desktop_vision_*，只清 desktop_api_* 在配了视觉模型的
         # 机器上会真的发出请求 —— 两条来源都要清空才是「未配置」。
         for key in ("desktop_api_url", "desktop_api_key", "desktop_model",

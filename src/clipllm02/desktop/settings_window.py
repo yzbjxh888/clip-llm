@@ -6,8 +6,6 @@
 from __future__ import annotations
 
 import copy
-import json
-import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -18,49 +16,17 @@ from PySide6.QtWidgets import (
 )
 
 from ..settings import validate
+from ..studio.config import config_path, load_config, save_config
 
 
 def user_settings_path() -> Path:
-    root = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
-    return root / "clip-llm02" / "settings.json"
-
-
-INTENTS_VERSION = 3
+    """兼容旧调用：配置路径由 studio.config 统一管理。"""
+    return config_path()
 
 
 def load_user_settings():
-    """主进程用：读用户配置，缺省回退出厂配置。
-
-    意图集升级时只刷新 ``intents`` 段，保留用户改过的其它设置
-    （模型、开关、拦截级别、搜索源等），避免「新版菜单不生效」。
-    """
-    from ..settings import load_defaults, load_settings
-    path = user_settings_path()
-    if not path.exists():
-        return load_defaults()
-    try:
-        user = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return load_defaults()
-    if not isinstance(user, dict):
-        return load_defaults()
-    if user.get("intents_version") != INTENTS_VERSION:
-        factory = load_defaults().as_dict()
-        user["intents"] = factory.get("intents", [])
-        user["intents_version"] = INTENTS_VERSION
-        try:
-            atomic_write(path, user)
-        except OSError:
-            pass
-    return load_settings(user)
-
-
-def atomic_write(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                   encoding="utf-8")
-    os.replace(tmp, path)
+    """主进程用：读用户配置；升级/迁移统一走 studio.config。"""
+    return load_config()
 
 
 class SettingsWindow(QWidget):
@@ -70,7 +36,6 @@ class SettingsWindow(QWidget):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self._original = copy.deepcopy(settings.as_dict())
-        self._original.setdefault("intents_version", INTENTS_VERSION)
         self.draft = copy.deepcopy(self._original)
         self.settings = settings
         self.setWindowTitle("clip-llm 0.2 · 设置")
@@ -104,8 +69,6 @@ class SettingsWindow(QWidget):
         self.cb_hide_preview = QCheckBox("隐藏输入预览（隐私）")
         self.cb_show_hints = QCheckBox("显示快捷键提示")
         self.cb_auto_submit = QCheckBox("高置信时自动提交（不推荐）")
-        self.spin_recommended = QSpinBox()
-        self.spin_recommended.setRange(1, 9)
         self.combo_disabled = QComboBox()
         self.combo_disabled.addItems(["grayed", "hidden", "hidden_in_fold"])
         self.combo_default = QComboBox()
@@ -117,7 +80,6 @@ class SettingsWindow(QWidget):
         form.addRow(self.cb_hide_preview)
         form.addRow(self.cb_show_hints)
         form.addRow(self.cb_auto_submit)
-        form.addRow("推荐项数量（1-9）", self.spin_recommended)
         form.addRow("已禁用项显示方式", self.combo_disabled)
         form.addRow("默认意图策略", self.combo_default)
         form.addRow("触发策略", self.combo_trigger)
@@ -129,8 +91,6 @@ class SettingsWindow(QWidget):
             lambda v: self.draft.__setitem__("desktop_show_hints", bool(v)))
         self.cb_auto_submit.toggled.connect(
             lambda v: self.draft["menu"].__setitem__("auto_submit", bool(v)))
-        self.spin_recommended.valueChanged.connect(
-            lambda v: self.draft["menu"].__setitem__("recommended_limit", int(v)))
         self.combo_disabled.currentTextChanged.connect(
             lambda v: self.draft["menu"].__setitem__("show_disabled_items", v))
         self.combo_default.currentTextChanged.connect(
@@ -184,19 +144,20 @@ class SettingsWindow(QWidget):
         scroll.setWidgetResizable(True)
         inner = QWidget()
         form = QFormLayout(inner)
-        self.policy_combos: dict[str, QComboBox] = {}
+        self.policy_checks: dict[str, QCheckBox] = {}
         for rule_id, rule in self.settings.policy.get("rules", {}).items():
-            combo = QComboBox()
-            combo.addItems(["BLOCK", "WARN", "CONFIRM", "ALLOW"])
-            combo.setCurrentText(str(rule.get("level", "ALLOW")))
-            combo.setEnabled(not rule.get("locked", False))
-            combo.currentTextChanged.connect(
+            cb = QCheckBox("拦截")
+            locked = bool(rule.get("locked", False))
+            cb.setChecked(rule.get("enabled", True) is not False or locked)
+            cb.setEnabled(not locked)
+            cb.toggled.connect(
                 lambda v, rid=rule_id:
-                self.draft["policy"]["rules"][rid].__setitem__("level", v))
-            label = QLabel(f"{rule_id}　{rule.get('description', '')}")
+                self.draft["policy"]["rules"][rid].__setitem__("enabled", bool(v)))
+            label = QLabel(f"{rule.get('label') or rule_id}　"
+                           f"{rule.get('description', '')}")
             label.setWordWrap(True)
-            form.addRow(label, combo)
-            self.policy_combos[rule_id] = combo
+            form.addRow(label, cb)
+            self.policy_checks[rule_id] = cb
         scroll.setWidget(inner)
         return scroll
 
@@ -272,9 +233,6 @@ class SettingsWindow(QWidget):
             widget.blockSignals(True)
             widget.setChecked(bool(value))
             widget.blockSignals(False)
-        self.spin_recommended.blockSignals(True)
-        self.spin_recommended.setValue(int(menu.get("recommended_limit", 6)))
-        self.spin_recommended.blockSignals(False)
         for combo, value in ((self.combo_disabled, menu.get("show_disabled_items", "grayed")),
                              (self.combo_default, menu.get("default_intent_policy", "last_used")),
                              (self.combo_trigger, general.get("trigger_policy", "auto")),
@@ -311,7 +269,7 @@ class SettingsWindow(QWidget):
     def _apply(self) -> bool:
         if not self._validate():
             return False
-        atomic_write(user_settings_path(), self.draft)
+        save_config(self.draft)
         self._original = copy.deepcopy(self.draft)
         self.applied.emit(copy.deepcopy(self.draft))
         return True

@@ -76,7 +76,7 @@
 
 - 数据：`INTENTS` 中 `domains` 含 Top1 或 `applicable="*"` 且 `enabled` 的项；
 - 排序：`order` 升序 → 偏好频次降序；偏好**只影响排序，不覆盖本次明确选择**；
-- 数量：`min(menu.recommended_limit, 9)`（数字键只有 1~9，默认 6）；
+- 数量：当前类别下全部启用查询方式，按 `order` 全量显示（ADR-7，不截断）；
 - 每项显示 `label` + `hint`（悬停 300ms）；带 `⏎默认` 标记的项由
   `menu.default_intent_policy` 决定：`last_used` / `first` / `none`；
 - 不适用项按 `menu.show_disabled_items` 处理：`grayed`（置灰 + 原因 tooltip，

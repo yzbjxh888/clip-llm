@@ -2,7 +2,7 @@
 
 一个本地优先的桌面词典式**内容解释工具**：复制或选中一段文字，窗口自动弹出「初判」，由你决定要看哪一面，再请求大模型给出结构化解释。支持多轮追问、把一次会话落成一篇 Markdown 笔记、图片/截图识别、网页搜索与可插拔的提示词模板。
 
-当前版本 `0.2.6`，基于 PySide6，主要面向 Linux 桌面（X11 / Wayland）。
+当前版本 `0.2.27`，基于 PySide6，主要面向 Linux 桌面（X11 / Wayland）。
 
 > 设计原则：**分类器只缩小选项空间，用户决定解释意图，模型只负责执行。**
 > 本地初判和菜单不消耗任何 token；不填模型配置时，软件只显示本地预览、不发网络请求。
@@ -35,12 +35,12 @@
 |---|---|
 | 剪贴板监听 | 文本与图片两路，X11 用 `QClipboard.dataChanged`、Wayland 用常驻 `wl-paste --watch`；复制后自动弹窗 |
 | 本地初判 | 34 个具名字符特征 + 7 个领域候选 + 分级拦截，全部本地计算，零 token |
-| 查询方式 | 14 套提示词模板 / 44 条查询方式，可在设置里改名、改提示词、启停、新增 |
+| 查询方式 | 11 套提示词模板 / 41 条查询方式，可在设置里改名、改提示词、启停、新增 |
 | 多轮追问 | 结果页底部追问，带上一轮问答作为上下文；追问用自由作答而不是重复 JSON 字段 |
 | 结果排版 | JSON 与 Markdown 双通道，公式转 Unicode，表格、列表、气泡；深浅主题与字号可调 |
 | 知识库 | 一次会话落成一篇带 YAML frontmatter 的 Markdown（`session` / `rounds` / `created` / `updated`），默认按模板分文件夹 |
 | 结果缓存 | 磁盘缓存（`~/.cache/clip-llm02/results.json`），键覆盖提示词、意图、呈现、规则集与输入摘要 |
-| 分级拦截 | `BLOCK / WARN / CONFIRM / ALLOW` 四档，出厂 18 条规则，可在设置页改命中方式与级别 |
+| 两级拦截 | `BLOCK / ALLOW` 两级，出厂 14 条规则；设置页勾选＝拦截、取消勾选＝放行 |
 | 网页搜索 | 7 个出厂搜索源，顶栏菜单与结果页「选中文本」右键都能用；设置页可增删、改名、改网址 |
 | 图片识别 | 剪贴板图片 / 系统截图 → 视觉模型 → 识别出的文字回灌初判；`Ctrl+Alt+S` |
 | 设置 | 8 个页签、草稿事务、改完立即生效、10 组可改快捷键、深浅主题、知识库目录 |
@@ -55,7 +55,7 @@
 ### 方式一：`.deb`（推荐给桌面用户）
 
 ```bash
-sudo dpkg -i clipllm02_0.2.6_amd64.deb
+sudo dpkg -i clipllm02_0.2.27_amd64.deb
 clipllm02-doctor          # 解释器 / 导入 / 依赖自检
 clipllm02-desktop         # 启动
 ```
@@ -82,7 +82,7 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests
 
 ```bash
 bash scripts/backup.sh      # 不含 venv 的源码快照（dist/）
-bash scripts/build_deb.sh   # 生成 dist/clipllm02_0.2.6_amd64.deb
+bash scripts/build_deb.sh   # 生成 dist/clipllm02_0.2.27_amd64.deb
 ```
 
 ### 配置模型
@@ -155,18 +155,17 @@ bash scripts/build_deb.sh   # 生成 dist/clipllm02_0.2.6_amd64.deb
 
 ### 1. 拦截逻辑还不够清晰
 
-- 出厂实际是 **18 条**规则，但 `README`/`docs/09` 写 15 条、`docs/02` 列 17 项，三处对不上。
+- 规则条数与级别口径已按 ADR-13 对齐：出厂 **14 条**、仅 `BLOCK/ALLOW`；`docs/02` 第 4 节明确标为历史参考。
 - `dedup` 规则是**死规则**：`policy.py` 需要调用方传 `runtime["is_duplicate"]`，而全仓没有任何调用方传；去重实际由各入口各自实现。
 - `quota`（每日限额）只在 Studio 链路生效；`cli.py`、`serve.py`、classic 桌面版调用 `preflight()` 时不传 runtime，限额永不触发。
 - `levels` 行为表运行时只读了 `request`，`popup` / `banner` / `log` 等字段没接线；规则里的 `locked` 只用于配置校验，不参与求值。
-- `CONFIRM` 只在 Studio 的「首次点击改成授权说明、再次点击才发请求」一条路径上实现；classic / CLI / serve 不会阻止请求。
-- 自定义敏感正则的级别在代码里被硬编码成 `CONFIRM`，与「按 secret 当前级别处理」的注释不一致。
+- 自定义敏感正则已跟随 `secret` 规则的级别、开关与多行代码豁免；纯图片信封不再被文本正则误拦。
 - `BLOCK` 在 Studio 里静默丢弃并只写诊断日志，不写脱敏拦截记录；文档描述的「只写脱敏记录」只在 classic 版成立。
 - 求值实现是**遍历全部规则收集命中、最后取最高级**，不是文档写的「BLOCK 优先短路」。
 
 ### 2. 拦截之后的分类器与字符特征也不够清晰
 
-- `features.py` 的 34 个具名特征、条件树（`all/any/not` + 9 种比较）确实是数据驱动的；但**类别初判本身是硬编码 Python**：`classify.py` 里 14 条 lambda 规则表 + veto + 中文类型的 if 链，改规则需要改代码。文档里「所有组合逻辑都是数据、改规则不改代码」对这部分不成立。
+- `features.py` 的 34 个具名特征、条件树（`all/any/not` + 9 种比较）确实是数据驱动的；但**类别初判本身是硬编码 Python**：`classify.py` 里 12 条 lambda 规则表 + veto + 中文类型的 if 链，改规则需要改代码。文档里「所有组合逻辑都是数据、改规则不改代码」对这部分不成立。
 - 领域候选的分数直接取自 `builtin_settings.json` 里写死的常量（如 `math 0.92`），**没有按证据动态评分，也没有测试集校准**；`detection.score_mode` 运行时不读。
 - 领域亲和表 `NEAR_DOMAINS` 硬编码且不含 `physics`，但文档举例说 `E=mc²` 会并列物理角度。
 - 部分阈值散落或缺失：`cn_dominant_min` 在两个文件各写一次默认值；`cn_sentence_min_len` 根本不在出厂配置里，永远用代码默认值；`thresholds.cn_mixed_max`、`cn_max_chars` 运行时 0 次引用。
@@ -184,7 +183,7 @@ bash scripts/build_deb.sh   # 生成 dist/clipllm02_0.2.6_amd64.deb
 | 部分图片配置 | `auto_recognize_in_menu` 只用于「menu 模式下为 true 就报配置错误」，运行时不读；`quick_preset_enabled`、`asset_ttl_days` 运行时 0 次读取；只有 `max_bytes` 生效 |
 | 呈现形态 | `static / table / interactive / annotate` 四种里，后两种只是标记，`json_render.py` 没有专用渲染分支 |
 | `physics` 模板 | 领域有 `physics`，模板没有；两条物理意图挂在 `latex` 模板下靠专属提示词区分 |
-| 模板覆盖 | 14 套模板里只有 9 套有从旧脚本迁移来的完整提示词，另外 5 套（化学 / 四个图像类）用的仍是出厂短版 |
+| 模板覆盖 | 11 套模板里只有 9 套注入了旧脚本完整提示词，`chem_substance` 与 `image` 两套仍用出厂短版 |
 | 多输入通道 | `docs/02` 描述的五条输入通道与「图片 → 写回剪贴板 → 内部提交」链路没有对应实现，实际是 Qt + `wl-paste` 两路 |
 | 其它 | 设置页 `SWITCH_LABELS` 是死代码；`conflict_policy` / `prompt_version` / `schema_version` 只进数据不参与决策；`allowed_route_ids` 多选预留 |
 

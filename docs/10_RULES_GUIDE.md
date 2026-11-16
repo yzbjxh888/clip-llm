@@ -32,8 +32,13 @@ for name, desc in feature_catalog().items():
 
 ## 2. 硬拦截规则（`spec/builtin_policy.json`）
 
-每条规则是一个 dict，公共字段：`level`（BLOCK/CONFIRM/WARN/ALLOW）、
-`description`（设置页展示）、`locked`（true 则设置页不可改级别）。
+每条规则是一个 dict，公共字段：`label`（设置页显示的中文名）、
+`level`（只有 `BLOCK` / `ALLOW` 两级，见 ADR-13）、`description`（设置页说明）、
+`enabled`（设置页的勾选框）、`locked`（true 则不可关闭，例如长度上限与配额）。
+
+**判据只允许三种形态**：整串形状匹配（`^...$`）、隐私子串匹配、元数据
+（长度/配额）。规则里**不得引用语义特征**（`has_cn`、`code_like`…），否则
+闸门会和分类器争夺同一批输入的解释权。
 
 按 `detector` 分五种写法：
 
@@ -122,7 +127,7 @@ def test_my_rule_blocks():
 {"policy": {"rules": {"url": {"level": "BLOCK"},
                       "my_rule": {"detector": "regex",
                                   "pattern": "TODO",
-                                  "level": "WARN",
+                                  "level": "BLOCK",
                                   "description": "调试残留"}}}}
 ```
 

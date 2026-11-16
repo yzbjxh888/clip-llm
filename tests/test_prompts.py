@@ -12,14 +12,14 @@ class TestFollowupSystem(unittest.TestCase):
         self.settings = load_defaults()
 
     def _composed_system(self):
-        return compose_prompt(self.settings.intent("image.formula"),
+        return compose_prompt(self.settings.intent("math.derive"),
                               self.settings).prompt
 
     def test_strips_contract_but_keeps_domain_rules(self):
         original = self._composed_system()
         self.assertIn("【输出契约", original)
         result = followup_system(original)
-        self.assertIn("先提取公式", result)               # 领域设定保留
+        self.assertIn("从已给式子出发", result)            # 领域设定保留
         self.assertNotIn("【输出契约", result)             # 严格 JSON 契约剥掉
         self.assertIn("【追问模式 · 自由作答】", result)
         self.assertIn("不要输出 JSON", result)
@@ -43,13 +43,13 @@ class TestComposePrompt(unittest.TestCase):
         self.settings = load_defaults()
 
     def test_includes_other_route_sections(self):
-        intent = self.settings.intent("image.formula")
+        intent = self.settings.intent("math.derive")
         result = compose_prompt(intent, self.settings)
-        self.assertEqual(result.query_type, "image_ocr")
-        self.assertIn("先提取公式", result.prompt)          # 主路由
-        self.assertIn("量纲", result.prompt)               # includes: latex.structure
+        self.assertEqual(result.query_type, "latex")
+        self.assertIn("从已给式子出发", result.prompt)       # 主路由
+        self.assertIn("推导要点", result.prompt)            # includes: general.key_points
         self.assertIn("【输出契约", result.prompt)          # append-only 契约
-        self.assertIn("structure", result.fields)
+        self.assertIn("key_points", result.fields)
         self.assertNotEqual(result.composition_hash, composition_hash([]))
 
     def test_every_custom_intent_declares_json_fields(self):
@@ -57,9 +57,16 @@ class TestComposePrompt(unittest.TestCase):
         custom = [i for i in self.settings.intents if i.prompt_override.strip()]
         self.assertGreaterEqual(len(custom), 25)
         for intent in custom:
-            self.assertIn("只输出这些字段", intent.prompt_override, intent.id)
-            self.assertIn("反斜杠", intent.prompt_override, intent.id)
-            self.assertNotIn("严格按 JSON 输出", intent.prompt_override, intent.id)
+            body = intent.prompt_override
+            # 图片方式的契约来自路由提示词（JSON / 纯文本 OCR），
+            # 其余方式必须自带字段清单。
+            self.assertTrue(
+                any(k in body for k in ("只输出这些字段", "只输出有内容的字段", "只输出一个 JSON 对象",
+                                        "严格按 JSON 输出",
+                                        "只返回识别结果")), intent.id)
+            if "只输出这些字段" in body:
+                self.assertIn("反斜杠", body, intent.id)
+                self.assertNotIn("严格按 JSON 输出", body, intent.id)
 
     def test_contract_defers_to_inline_field_list(self):
         """有专属清单时，契约不再重复列模板字段，避免两套清单打架。"""
@@ -70,9 +77,9 @@ class TestComposePrompt(unittest.TestCase):
         self.assertIn("structure", legacy.prompt)
 
     def test_single_query_type_contract(self):
-        result = compose_prompt(self.settings.intent("image.formula"), self.settings)
-        self.assertEqual(result.query_type, "image_ocr")
-        self.assertIn("结构", result.prompt)
+        result = compose_prompt(self.settings.intent("math.derive"), self.settings)
+        self.assertEqual(result.query_type, "latex")
+        self.assertIn("推导", result.prompt)
         self.assertEqual(result.prompt.count('"query_type"'), 1)
 
     def test_default_format_is_metadata_not_prompt(self):

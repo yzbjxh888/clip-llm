@@ -43,6 +43,10 @@
   **绝不把 base64 塞进跨层对象**；
 - 快捷预设与意图菜单并存，由 `image.quick_preset_enabled` 开关。
 
+> 0.2.7 起（ADR-15）：图片先出「图片查询方式」菜单，用户选定模板后才调视觉
+> 模型；剪贴板/截图不再自动识别，总开关为 `image.vision_enabled`。图 + 文
+> 同时存在时 `modality=mixed`，图片由视觉模板消费、文本由文本模板消费。
+
 ### 2.3 三个真实竞态
 
 1. **同一次复制同时提供文本与图片**（网页里复制带 alt 的图、富文本编辑器）：
@@ -112,6 +116,10 @@ class InputEnvelope:
 - `image_text_conflict=ask` 时用户选模态也不算选择意图，仍要再选一次意图。
 
 ## 4. 硬拦截清单：分级 + 判别特征
+
+> **本节已被 ADR-13 取代（2026-11-16）**：0.2.7 起只保留 `BLOCK` / `ALLOW`
+> 两级，硬拦截收敛为闭集且禁止引用语义特征。下面的 WARN / CONFIRM 表仅作
+> 历史参考，现行清单见 `spec/builtin_policy.json` 与 ADR-13。
 
 ### 4.1 分级语义
 
@@ -214,13 +222,11 @@ sequenceDiagram
     IM->>AR: ImageEvent(bytes, mime, digest)
     AR->>AR: 300ms 合并窗口 + 回环抑制
     AR->>PL: InputEnvelope
-    PL->>PL: preflight → BLOCK/WARN/CONFIRM/ALLOW
+    PL->>PL: preflight → BLOCK / ALLOW
     alt BLOCK
         PL-->>AR: 脱敏拦截记录，零窗口
-    else CONFIRM
-        PL->>SG: 授权通过后
-    else WARN / ALLOW
-        PL->>SG: 携带 warnings
+    else ALLOW
+        PL->>SG: 正常进入菜单
     end
     SG->>SG: 本地特征提取 + 领域候选（零 token）
     SG-->>U: MenuModel（不请求模型）

@@ -5,7 +5,8 @@
 """
 from __future__ import annotations
 
-import json
+import hashlib
+import html
 import os
 import re
 import threading
@@ -24,6 +25,7 @@ from ..desktop.clipboard_worker import ClipboardWorker  # noqa: F401 (serve 兼�
 from .clipboard_monitor import ClipboardMonitor
 from ..desktop.gateway import Gateway, GatewayConfig, GatewayResult, ResultCache
 from ..features import extract_features
+from ..modality import AssetStore
 from ..models import (
     DomainCandidate, InputEnvelope, Preferences, Suggestion, UserSelection,
     new_id, sha256_text,
@@ -32,15 +34,17 @@ from ..policy import preflight
 from ..prompts import build_request_prompt, followup_system
 from ..serve import ClipboardReader
 from ..settings import Settings, structure_signature
-from ..suggest import build_menu, suggest
-from .config import load_config, settings_from_data
+from ..suggest import auto_followup_intent, build_menu, suggest
+from .config import DEFAULT_DESKTOP_DUP_TTL, load_config, settings_from_data
 from . import __main__ as studio_build
 from .input_bridge import InputBridge
 from .json_render import (RENDER_SCHEMA, render_json_result,
                           render_local_preview, render_notice)
 from .main_window import MainWindow
 from .vision import (
-    capture_screenshot, read_clipboard_image, read_image_file, recognize,
+    capture_screenshot, intent_vision_prompt, read_clipboard_image,
+    read_image_file, recognize, vision_enabled, vision_route,
+    VisionResult, VISION_FOLLOWUP_SYSTEM,
 )
 
 _IMAGE_REF = re.compile(r"@image:[^\s]+")
@@ -82,7 +86,8 @@ class StudioApp(QObject):
         self._sigint = False
         self._seen: dict[str, float] = {}
         self._self_copy: set[str] = set()
-        self._cancel: threading.Event | None = None
+        self._cancels: set[threading.Event] = set()
+        self._vision_cancels: set[threading.Event] = set()
 
         self.bridge = _Bridge()
         self.bridge.finished.connect(self._on_worker_done)
@@ -90,6 +95,18 @@ class StudioApp(QObject):
         self.gateway = Gateway(GatewayConfig.from_settings(settings))
         self.cache = ResultCache()
         self.reader = ClipboardReader()
+        # 图片是一等模态：原图落 AssetStore，数据对象只带 asset_id/摘要；
+        # 最近几张图在内存里留一份，用户点菜单时不必回读磁盘。
+        self.assets = AssetStore(
+            max_bytes=int(settings.image.get("max_bytes", 8 * 1024 * 1024)))
+        self._vision_assets: dict[str, tuple[bytes, str]] = {}
+        # 刚提交过的正文：查询框里如果还是它，说明是残留，不能当成新截图的
+        # 「附加要求」——否则视觉模型会照着上一段正文答，而不是看图。
+        self._last_query_text = ""
+        # 已经用过的图片摘要（最近 8 张）。剪贴板里如果还是老图——截图工具常把
+        # 截图写回剪贴板，直接读剪贴板又永远读到同一张——必须当作「没有新图」，
+        # 否则会出现「查不同公式，返回的总是上一个」。
+        self._used_image_digests: list[str] = []
 
         self.window = MainWindow(settings)
         self.input_bridge = InputBridge(self)
@@ -135,7 +152,7 @@ class StudioApp(QObject):
             self.tray = QSystemTrayIcon(self._tray_icon(), self)
             menu = QMenu()
             menu.addAction("⚙ 设置 (F3)", self.open_settings)
-            menu.addAction("🖼 截图 / 图片识别", self.on_vision)
+            menu.addAction("🖼 截图 / 图片查询（先选模板）", self.on_vision)
             menu.addAction("显示窗口", self.show_window)
             menu.addSeparator()
             menu.addAction("退出", self.shutdown)
@@ -240,21 +257,33 @@ class StudioApp(QObject):
 
     def _check_ipc(self) -> None:
         request = self.ipc_dir / "vision.cmd"
-        if request.exists():
-            try:
-                request.unlink(missing_ok=True)
-            except OSError:
-                pass
-            self.on_vision()
+        if not request.exists():
+            return
+        try:
+            request.unlink(missing_ok=True)
+        except OSError:
+            # 删不掉就别执行：否则每 500ms 都会再触发一次系统截图。
+            self._diag("ipc", reason="unlink-failed")
+            return
+        self.on_vision()
 
     def _on_clipboard_text(self, text: str) -> None:
         if self._alive and not self._paused:
             self.process_text(text, source="clipboard")
 
     def _on_clipboard_image(self) -> None:
-        """GNOME 截图 / 复制图片进入剪贴板 → 自动识别（截图即用户主动动作）。"""
-        if self._alive and not self._paused:
-            self.on_vision()
+        """截图 / 复制图片 → 和文本一样弹出初判窗口（不自动识别）。
+
+        截图本身是用户主动动作，弹一次初判窗是期望行为；真正决定「要不要
+        识别、用哪套模板」的是窗口里的选择。总开关 ``image.vision_enabled``
+        关闭后这里直接返回，不弹窗也不发请求。
+        """
+        if not (self._alive and not self._paused):
+            return
+        if not vision_enabled(self.settings):
+            self._diag("vision-skip", reason="image.vision_enabled=false")
+            return
+        self.on_vision()
 
     # -- 子窗口反馈 --------------------------------------------------------
     def _child_opened(self) -> None:
@@ -330,7 +359,7 @@ class StudioApp(QObject):
         now = time.time()
         if digest in self._self_copy:
             return True
-        ttl = float(self.settings.get("desktop_dup_ttl", 300))
+        ttl = float(self.settings.get("desktop_dup_ttl", DEFAULT_DESKTOP_DUP_TTL))
         last = self._seen.get(digest)
         if last is not None and ttl > 0 and now - last < ttl:
             return True
@@ -341,7 +370,17 @@ class StudioApp(QObject):
 
     # -- 第一层 ------------------------------------------------------------
     def process_text(self, text: str, *, source: str = "clipboard",
-                     new_tab: bool = False, force_dedup_bypass: bool = False) -> None:
+                     new_tab: bool = False, force_dedup_bypass: bool = False,
+                     auto_submit: bool = False,
+                     notify_block: bool = False,
+                     force_route: str = "") -> None:
+        """文本查询主入口。
+
+        ``auto_submit``：初判后不等用户点选，直接用默认查询方式发请求
+        （图片识别回流走这条，做到「截图 → 选一次 → 出答案」）。
+        ``notify_block``：被硬拦截时给一行提示，而不是静默（用户主动触发的
+        流程里，静默等于没反应）。
+        """
         text = strip_image_refs(text)
         if not self._alive or not text:
             return
@@ -370,6 +409,11 @@ class StudioApp(QObject):
                 tab.last_selection = None
                 self._diag("blocked", gen=tab.request_generation,
                            reasons=",".join(policy.block_reasons) or "-")
+                if notify_block:
+                    self._notice(
+                        "识别结果没有通过检查",
+                        "识别出的文字命中了硬拦截规则（"
+                        + "、".join(policy.block_reasons) + "），已停止本次查询。")
                 return
             s = suggest(env, policy, self.settings)
             if s.classification:
@@ -385,6 +429,64 @@ class StudioApp(QObject):
             # 新查询必须把常驻窗口带到前面，否则只会被 Chrome 盖住，
             # 用户只能看到 GNOME 的「已就绪」通知
             self.window.show_without_focus(bring_to_front=True)
+            # 与 _present_envelope 一致：正文已经进了标签页，查询框不能留残留，
+            # 否则下一次截图会把它当成「附加要求」拼进视觉提示词（串扰）。
+            if (env.text or "").strip():
+                # 只记有正文的那一次：图片信封不能把这条记忆冲掉，
+                # 否则旧正文又被当成新要求。
+                self._last_query_text = env.text.strip()
+            self.window.query_edit.clear()
+            if auto_submit:
+                # 同一事件循环里直接续跑：初判菜单不会被真正显示出来
+                self._auto_submit(tab, force_route=force_route)
+        except Exception:
+            self.state.errors.append(traceback.format_exc(limit=3))
+
+    def _pinned_intent(self, route_id: str) -> str | None:
+        """图片方式指定的下游文本模板 → 该模板下第一条可用查询方式。"""
+        if not route_id:
+            return None
+        candidates = [i for i in self.settings.intents
+                      if i.enabled and i.primary_route == route_id
+                      and "image" not in i.domains]
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda i: i.order)[0].id
+
+    def _auto_submit(self, tab, force_route: str = "") -> None:
+        """用初判的默认查询方式直接发请求，替用户省掉第二次点击。
+
+        只用于「图片识别 → 文本模板」这条回流链路；用户手动操作时菜单
+        仍然照常停留，等他选。
+        """
+        try:
+            menu = getattr(tab, "menu", None)
+            env = getattr(tab, "env", None)
+            intent_id = self._pinned_intent(force_route) \
+                or auto_followup_intent(menu, self.settings)
+            if not intent_id or env is None:
+                return
+            intent = self.settings.intent(intent_id)
+            if intent is None:
+                return
+            self._diag("auto-submit", intent=intent_id,
+                       category=getattr(menu, "category", None) or "-")
+            if hasattr(tab, "result_label"):
+                tab.result_label.setText(intent.label)
+            if hasattr(tab, "_goto_result"):
+                tab._goto_result()
+            self.on_intent(tab, {
+                "envelope_id": env.envelope_id,
+                "domain_id": (menu.domain_chips[0].id
+                              if menu.domain_chips else "*"),
+                "intent_id": intent_id,
+                "format_id": intent.default_format,
+                "custom_instruction": None,
+                "free_input_mode": "instruction",
+                "style_ref": None,
+                "allowed_route_ids": ([intent.primary_route]
+                                      if intent.primary_route else []),
+            })
         except Exception:
             self.state.errors.append(traceback.format_exc(limit=3))
 
@@ -466,22 +568,48 @@ class StudioApp(QObject):
                 self._diag("reject-blocked", gen=tab.request_generation,
                            reasons=",".join(policy.block_reasons) or "-")
                 return
-            # CONFIRM：不新开窗口、不新增控件。首次点击只把已有的黄色提示条
-            # 改成授权说明并留在初判层；再次点击同一入口才算显式授权。
-            level_actions = self.settings.policy.get("levels") or {}
-            if policy.level == "CONFIRM" and level_actions.get(
-                    "CONFIRM", {}).get("confirm", True):
-                signature = json.dumps(data, sort_keys=True, ensure_ascii=False)
-                if tab.pending_confirmation != signature:
-                    tab.pending_confirmation = signature
-                    tab.last_selection = dict(data)
-                    tab.warn.setVisible(True)
-                    tab.warn.setText(
-                        "⚠ 命中「需授权」策略，尚未发送任何网络请求；"
-                        "再次点击同一查询方式即视为授权（或按 Ctrl+R）。")
-                    self._diag("confirm-pending", level=policy.level)
+            # 两级策略：BLOCK 已在上面静默拒绝，走到这里就是 ALLOW，
+            # 不存在「二次确认」这类会额外弹窗的中间态。
+            # 图片模态：选中的是图片模板就发视觉请求；纯图片必须先选一套模板。
+            intent = (self.settings.intent(str(data.get("intent_id")))
+                      if data.get("intent_id") else None)
+            route_id = str(getattr(intent, "primary_route", "") or "") if intent else ""
+            is_vision_route = bool(
+                route_id and (self.settings.routes.get(route_id) or {}).get("vision"))
+            # 其他视角是「通用解读角度」：知识型回答交给文本模型，图片随消息附上
+            is_view = bool(intent is not None
+                           and str(intent.id).startswith("view."))
+            extra = str(data.get("custom_instruction") or "")
+            if env.assets and not followup and not extra.strip():
+                # 双模态：查询框里写的文字就是本次要求，之前只认
+                # custom_instruction，导致「图 + 一句问题」里的问题被丢掉。
+                extra = (env.text or "").strip()
+            # 追问是对「已有答案」的文本提问：带着 history 直接走文本模型，
+            # 不再重新识别图片（此前会二次发起视觉请求，且忽略 history）。
+            if env.assets and not followup:
+                has_text = bool((env.text or "").strip())
+                if not is_vision_route and not has_text \
+                        and not extra.strip() and not is_view:
+                    self._notice(
+                        "请选择一种图片查询方式",
+                        "图片已就绪：在查询方式里选一条（文字 / 表格 / 解释 / "
+                        "标注）即可识别；也可以在查询框写一句要求。")
                     return
-                tab.pending_confirmation = None
+                # 自由输入（没有选方式，只有一句要求）也要走视觉：
+                # 双模态时同样以图片为主，文字只是要求本身。
+                if (is_vision_route or intent is None or not has_text) \
+                        and not is_view:
+                    tab.last_selection = dict(data)
+                    self._start_vision(
+                        tab, env,
+                        route_id if is_vision_route
+                        else vision_route(self.settings),
+                        extra, intent,
+                        mode=str(data.get("free_input_mode") or "instruction"))
+                    return
+            if is_view and env.assets:
+                content_text = (content_text or "").strip() or \
+                    f"请从「{getattr(intent, 'label', '')}」的角度解读这张图片。"
             tab.last_selection = dict(data)
             tab.request_generation += 1
             generation = tab.request_generation
@@ -509,14 +637,17 @@ class StudioApp(QObject):
             font_size = int(self.settings.get("desktop_font_size", 14))
             dark = bool(self.settings.get("desktop_dark_theme", False))
             tab.show_loading(content_text, hint="正在请求模型..")
+            # 捕获网关快照：key 与实际请求必须来自同一份配置。热重载会整体
+            # 替换 self.gateway，旧请求若读到新模型会把结果缓存到旧键下。
+            gw = self.gateway
             key = composed.cache_key(
-                model=self.gateway.config.model, route_id=composed.query_type,
+                model=gw.config.model, route_id=composed.query_type,
                 intent_id=selection.intent_id or "freeform",
                 format_id=selection.format_id, schema_version=RENDER_SCHEMA,
                 ruleset_version=structure_signature(self.settings)[:16],
                 query_hash=env.query_hash, selection_salt=selection.cache_salt())
 
-            if not self.gateway.config.enabled:
+            if not gw.config.enabled:
                 self.state.stats["previews"] += 1
                 tab.show_result(render_local_preview(
                     composed, content_text, font_size=font_size, dark=dark),
@@ -536,20 +667,24 @@ class StudioApp(QObject):
                     title="解释结果")
                 return
 
+            attach_image = self._attach_image(followup, is_view, env)
             self.state.stats["requests"] += 1
             self.state.requests_today += 1
             cancel = threading.Event()
-            self._cancel = cancel
+            self._cancels.add(cancel)
             alive = self._alive
 
             def work():
                 try:
-                    result = self.gateway.explain(composed.prompt,
-                                                  content_text,
-                                                  history=chat_history,
-                                                  cancel=cancel)
+                    result = gw.explain(composed.prompt,
+                                        content_text,
+                                        history=chat_history,
+                                        image=attach_image,
+                                        cancel=cancel)
                 except Exception:
                     result = GatewayResult(html="", ok=False, error="模型调用异常")
+                finally:
+                    self._cancels.discard(cancel)
                 if alive and self._alive:
                     # 票据随回包携带：标签 / 上下文 / 请求三者必须全部匹配。
                     self.bridge.finished.emit((
@@ -599,6 +734,16 @@ class StudioApp(QObject):
         except Exception:
             self.state.errors.append(traceback.format_exc(limit=3))
             self._diag("error", where="save_library")
+
+    def _attach_image(self, followup, is_view, env):
+        """追问与「其他视角」都基于图片：把原图随文本请求一起发（默认开）。"""
+        if not getattr(env, "assets", ()):
+            return None
+        if not (followup or is_view):
+            return None
+        if not bool(self.settings.get("desktop_followup_image", True)):
+            return None
+        return self._asset_bytes(env.assets[0])
 
     def _record_chat(self, tab, raw: str) -> None:
         """记录本轮问答，供追问时作为多轮上下文（只保留最近 4 轮）。"""
@@ -693,49 +838,240 @@ class StudioApp(QObject):
             self._diag("error", where="_on_worker_done", exc=type(exc).__name__)
 
     # -- 图片识别 / 截图 ----------------------------------------------------
+    @staticmethod
+    def _image_identity(data: bytes) -> str:
+        """图片身份：按**像素**算，不按字节。
+
+        同一张图被重新编码（wl-paste / xclip 每次重新出 PNG）后字节会变，
+        但像素不变——按字节记账会认不出「还是上次那张」，于是又串扰。
+        """
+        from PySide6.QtGui import QImage
+        image = QImage.fromData(data)
+        if image.isNull():
+            return hashlib.sha256(data).hexdigest()
+        small = image.scaled(256, 256, Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+        small = small.convertToFormat(QImage.Format.Format_RGB32)
+        digest = hashlib.sha256()
+        digest.update(f"{small.width()}x{small.height()}|".encode())
+        for y in range(small.height()):
+            digest.update(bytes(small.constScanLine(y))[:small.bytesPerLine()])
+        return digest.hexdigest()
+
+    def _fresh_clipboard_image(self, found):
+        """剪贴板图是否为「新图」。
+
+        取图后记账：与之前查询过的图相同就返回 None（当作没有新图）。
+        截图工具常把截图写回剪贴板，直接读剪贴板会永远读到同一张，
+        表现为「查不同公式，返回的还是上次那个」。
+        """
+        if found is None:
+            return None
+        digest = self._image_identity(found[0])
+        if digest in self._used_image_digests:
+            self._diag("vision-skip-stale", bytes=len(found[0]))
+            return None
+        self._mark_image_used(digest)
+        return found
+
+    def _mark_image_used(self, digest: str) -> None:
+        """记账：同一张图不会第二次被当成「新图」。"""
+        if not digest or digest in self._used_image_digests:
+            return
+        self._used_image_digests.append(digest)
+        del self._used_image_digests[:-8]
+
     def on_vision(self) -> None:
+        """截图/复制图片 → 建图片信封 → 出菜单；识别在用户选模板后才发生。"""
         try:
             # 从托盘菜单触发时窗口可能已隐藏，需要主动提到最前
             self.window.show_without_focus(bring_to_front=True)
-            # 每次识别都是全新一屏：不清的话第二张图的等待卡片会挂在
-            # 上一轮结果下面，看起来像在旧对话里继续。
-            self.window.current_tab().begin_new_session()
-            max_bytes = int(self.settings.get("image", {}).get("max_bytes",
-                                                               8 * 1024 * 1024))
+            if not vision_enabled(self.settings):
+                self._notice("图片识别已关闭",
+                             "到「设置 → 模型」勾选「启用图片识别」后再试。")
+                return
+            max_bytes = int(self.settings.get("image", {}).get(
+                "max_bytes", 8 * 1024 * 1024))
             found = self.clip_monitor.take_image()
             origin = "剪贴板图片"
             if found is None:
                 found = read_clipboard_image(max_bytes)   # 外部命令兜底
+            found = self._fresh_clipboard_image(found)
             if found is None:
                 tab = self.window.current_tab()
                 tab.show_loading("屏幕截图", hint="正在请求截图..")
                 QApplication.processEvents()
                 found = capture_screenshot(max_bytes)
                 origin = "屏幕截图"
+                if found is not None:
+                    self._mark_image_used(self._image_identity(found[0]))
             if found is None:
                 self._notice("截图未完成",
                              "没有拿到截图（可能取消了选择，或桌面截图界面未响应）。"
                              "也可以先复制图片，再点顶栏的图片按钮重试。")
                 return
+
             image_bytes, mime = found
-            prompt = str(self.settings.get("desktop_vision_prompt", ""))
-            self.state.stats["vision"] += 1
-            tab = self.window.current_tab()
-            tab.show_loading(origin, hint="正在识别图片..")
+            try:
+                asset = self.assets.put(image_bytes, mime)
+            except ValueError as exc:
+                self._notice("图片不可用", str(exc))
+                return
+            self._remember_asset(asset, image_bytes, mime)
 
-            def work():
-                result = recognize(image_bytes, mime, prompt, self.settings)
-                if self._alive:
-                    self.bridge_vision.emit((tab, result))
-
-            threading.Thread(target=work, daemon=True).start()
+            # 新图 = 新一屏：旧结果不留在同一张卡片下面
+            self.window.current_tab().begin_new_session()
+            self.state.stats["events"] += 1
+            # 查询框有文字 → 双模态：图片交给图片模板，文字作为附加要求。
+            # 但如果那就是上一次提交的正文（查询框没清干净），它是残留而不是
+            # 要求：照单全收会让视觉模型去解释上一段文字（串扰）。
+            query_text = self.window.query_edit.text().strip()
+            if query_text and query_text == self._last_query_text:
+                self._diag("vision-drop-residual-text",
+                           chars=len(query_text))
+                self.window.query_edit.clear()
+                query_text = ""
+            env = (InputEnvelope.for_image(asset, source=origin, text=query_text)
+                   if query_text
+                   else InputEnvelope.for_image(asset, source=origin))
+            self._diag("vision-menu", asset=asset.asset_id[:8], mime=mime,
+                       modality=env.modality, text_chars=len(query_text))
+            self._present_envelope(env)
         except Exception:
             self.state.errors.append(traceback.format_exc(limit=3))
 
+    def _remember_asset(self, asset, data: bytes, mime: str) -> None:
+        self._vision_assets[asset.asset_id] = (data, mime)
+        while len(self._vision_assets) > 8:
+            self._vision_assets.pop(next(iter(self._vision_assets)), None)
+
+    def _asset_bytes(self, asset) -> tuple[bytes, str] | None:
+        hit = self._vision_assets.get(asset.asset_id)
+        if hit is not None:
+            return hit
+        try:
+            return Path(asset.local_path).read_bytes(), asset.mime
+        except OSError:
+            return None
+
+    def _present_envelope(self, env, *, new_tab: bool = False) -> None:
+        """图片信封复用文本的闸门/初判/菜单，只是推荐区换成图片查询方式。"""
+        policy = preflight(env, self.settings,
+                           runtime=self._policy_runtime(),
+                           sensitive_patterns=self._sensitive_patterns())
+        self._diag("preflight", source=env.source, level=policy.level,
+                   reasons=",".join(policy.block_reasons) or "-")
+        if not policy.allowed:
+            self.state.stats["blocked"] += 1
+            tab = self.window.current_tab()
+            tab.invalidated = True
+            tab.last_selection = None
+            return
+        suggestion = suggest(env, policy, self.settings)
+        menu = build_menu(suggestion, self.settings, self.state.prefs)
+        use_new_tab = new_tab or bool(
+            self.settings.get("desktop_new_query_in_new_tab", False))
+        tab = self.window.apply_context(env, policy, suggestion, menu,
+                                        new_tab=use_new_tab)
+        self._connect_tab(tab)
+        # 图片查询的附带要求已经进了 env；查询框不再保留，否则下一张截图
+        # 会把上一句当成新要求（串扰）
+        if (env.text or "").strip():
+            self._last_query_text = env.text.strip()
+        self.window.query_edit.clear()
+        self.state.stats["tabs"] = self.window.tabs.count()
+        self.window.show_without_focus(bring_to_front=True)
+
+    def _start_vision(self, tab, env, route_id: str, extra: str,
+                      intent=None, mode: str = "instruction") -> None:
+        """按用户选中的图片查询方式发视觉请求（模板提示词 + 附加要求）。
+
+        查询方式自带 ``prompt_override``（如图片公式 / 图片翻译）时优先用它，
+        否则用所属图片模板的提示词。
+        """
+        if not env.assets:
+            self._notice("这张图已经失效",
+                         "当前输入里没有图片，请重新截图或复制图片后再试。")
+            return
+        found = self._asset_bytes(env.assets[0])
+        if found is None:
+            self._notice("原图已失效", "缓存里找不到这张图，请重新截图。")
+            return
+        data, mime = found
+        prompt = intent_vision_prompt(self.settings, route_id, intent, extra,
+                                      mode)
+        intent_id = str(getattr(intent, "id", "") or "")
+        followup = str(getattr(intent, "followup_route", "") or "")
+        label = (str(getattr(intent, "label", "") or "")
+                 or ("自定义" if intent is None
+                     else str((self.settings.routes.get(route_id) or {})
+                              .get("label") or route_id)))
+        self.state.stats["vision"] += 1
+        tab.request_generation += 1
+        # 图片请求也要带票据：慢的旧请求返回时不能盖掉新截图的结果
+        generation = tab.request_generation
+        envelope_id = str(getattr(env, "envelope_id", "") or "")
+        # 直出的结果页也要能追问：把这一轮的「输入」和「system」记下来，
+        # 否则 chat_history 是空的，追问会退化成一句孤立的新查询。
+        tab._pending_content = (f"[图片] {label}"
+                                + (f"；附加要求：{extra.strip()}"
+                                   if extra.strip() else ""))
+        tab._pending_system = VISION_FOLLOWUP_SYSTEM
+        tab.show_loading(f"图片 · {label}", hint="正在识别图片..")
+        self._diag("vision-start", intent=intent_id, chars=len(prompt),
+                   asset=str(getattr(env.assets[0], "sha256", "") or "")[:8],
+                   gen=generation)
+
+        cancel = threading.Event()
+        self._vision_cancels.add(cancel)
+        settings_snapshot = self.settings
+
+        def work():
+            try:
+                result = recognize(data, mime, prompt, settings_snapshot,
+                                   cancel=cancel)
+            except Exception as exc:
+                # 没有兜底时线程会静默死亡，标签永远停在「正在识别图片..」。
+                self.state.errors.append(traceback.format_exc(limit=3))
+                result = VisionResult(error=f"图片识别异常：{exc}", mime=mime)
+            finally:
+                self._vision_cancels.discard(cancel)
+            if self._alive:
+                self.bridge_vision.emit((tab, result, intent_id, label,
+                                         followup, prompt, generation,
+                                         envelope_id))
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _on_vision_done(self, payload) -> None:
-        tab, result = payload
+        payload = tuple(payload)
+        tab, result = payload[0], payload[1]
+        from .query_tab import QueryTab
+        if isinstance(tab, QueryTab) and tab not in self.window._tabs:
+            self._diag("drop", reason="closed-tab")
+            return
+        # 票据校验：截图之后用户又换了一张图 / 又点了一次，旧请求迟到必须丢弃，
+        # 否则「这张图在讲什么」显示的是上一张图的答案（串扰）。
+        generation = payload[6] if len(payload) > 6 else None
+        if generation is not None and generation != tab.request_generation:
+            self._diag("drop", reason="stale-vision", got=generation,
+                       want=tab.request_generation)
+            return
+        envelope_id = str(payload[7]) if len(payload) > 7 else ""
+        if envelope_id and (tab.env is None
+                            or envelope_id != tab.env.envelope_id):
+            self._diag("drop", reason="stale-vision-envelope")
+            return
+        intent_id = str(payload[2]) if len(payload) > 2 else "image.ocr"
+        intent_label = str(payload[3]) if len(payload) > 3 else intent_id
+        has_followup = len(payload) > 4
+        followup = str(payload[4] or "") if has_followup else ""
+        if not has_followup and intent_id == "image.ocr":
+            # 只有「老载荷根本没有这个字段」时才走兼容默认；
+            # 用户显式把某条方式设成「直接展示」不能被改回去。
+            followup = "auto"
         if not result.ok:
-            self._notice("图片识别失败", result.error)
+            self._notice("图片识别失败", result.error, tab=tab)
             if self.tray is not None:
                 self.tray.showMessage("clip-llm 图片识别失败", result.error,
                                       QSystemTrayIcon.MessageIcon.Warning, 6000)
@@ -745,12 +1081,34 @@ class StudioApp(QObject):
             self._notice("图片识别没有返回文字",
                          "视觉模型只返回了图片引用或空内容，已跳过本次查询。")
             return
+        # 「提取图片中的文字」：识别结果作为查询内容进初判，再解释一遍。
+        # 表格 / 解释 / 标注：模型返回的已经是答案本身，直接渲染结果，
+        # 不再拿它当文本再请求一次（否则表格 JSON 会被当成一个新问题）。
+        if not str(getattr(tab, "_pending_content", "") or "").strip():
+            tab._pending_content = f"[图片] {intent_label}"
+        if not str(getattr(tab, "_pending_system", "") or "").strip():
+            tab._pending_system = VISION_FOLLOWUP_SYSTEM
+        if not followup:
+            tab.show_result(render_json_result(
+                text,
+                font_size=int(self.settings.get("desktop_font_size", 14)),
+                dark=bool(self.settings.get("desktop_dark_theme", False))),
+                title=intent_label)
+            self._record_chat(tab, text)
+            self.state.stats["requests"] += 1
+            return
+        # 一次点击走完：识别结果直接按初判的默认查询方式发给文本模型，
+        # 不再弹第二次初判（设置 → 模型 可关掉，改为先看识别结果）。
+        auto = bool((self.settings.get("image") or {}).get("auto_continue", True))
         self.window.query_edit.setText(text[:200])
-        self.process_text(text, source="vision", force_dedup_bypass=True)
+        self.process_text(
+            text, source="vision", force_dedup_bypass=True,
+            auto_submit=auto, notify_block=True,
+            force_route="" if followup == "auto" else followup)
 
-    def _notice(self, title: str, message: str) -> None:
-        self.window.current_tab().show_result(render_notice(
-            title, f"<p>{message}</p>",
+    def _notice(self, title: str, message: str, tab=None) -> None:
+        (tab or self.window.current_tab()).show_result(render_notice(
+            title, f"<p>{html.escape(str(message))}</p>",
             font_size=int(self.settings.get("desktop_font_size", 14)),
             dark=bool(self.settings.get("desktop_dark_theme", False))),
             title=title)
@@ -787,6 +1145,8 @@ class StudioApp(QObject):
         self._child_closed()
         try:
             self.settings = settings_from_data(data)
+            self.assets.max_bytes = int(self.settings.image.get(
+                "max_bytes", 8 * 1024 * 1024))
             self.gateway = Gateway(GatewayConfig.from_settings(self.settings))
             self.window.set_settings(self.settings)
             self.window.fill_search_menu(
@@ -816,17 +1176,20 @@ class StudioApp(QObject):
     # -- 生命周期 ----------------------------------------------------------
     def shutdown(self) -> None:
         self._alive = False
-        if self._cancel is not None:
-            self._cancel.set()
+        for cancel in tuple(self._cancels):
+            cancel.set()
+        for cancel in tuple(self._vision_cancels):
+            cancel.set()
         self.ipc_timer.stop()
         if self.tray is not None:
             self.tray.hide()
         self.input_bridge.shutdown()
         self.clip_monitor.stop()
-        try:
-            self.clip_monitor.text_found.disconnect()
-            self.bridge.finished.disconnect()
-        except (RuntimeError, TypeError):
-            pass
+        for signal in (self.clip_monitor.text_found, self.bridge.finished,
+                       self.bridge_vision):
+            try:
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass
         self.window.hide()
         QApplication.quit()

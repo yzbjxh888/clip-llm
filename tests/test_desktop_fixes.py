@@ -28,9 +28,8 @@ from clipllm02.desktop.app import DesktopApp  # noqa: E402
 from clipllm02.desktop.gateway import GatewayResult  # noqa: E402
 from clipllm02.desktop.menu_window import MenuWindow  # noqa: E402
 from clipllm02.desktop.result_window import ResultWindow  # noqa: E402
-from clipllm02.desktop.settings_window import (  # noqa: E402
-    INTENTS_VERSION, load_user_settings,
-)
+from clipllm02.desktop.settings_window import load_user_settings  # noqa: E402
+from clipllm02.studio.config import CONFIG_VERSION  # noqa: E402
 from clipllm02.desktop import x11_state  # noqa: E402
 from clipllm02.desktop.window_base import ResizableWindow  # noqa: E402
 from clipllm02.prompts import compose_prompt  # noqa: E402
@@ -216,18 +215,17 @@ class ConfigUpgrade(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
             data = load_defaults().as_dict()
+            data["config_version"] = 1
             data["intents"] = [{
                 "id": "stale", "label": "旧模板", "domains": ["*"],
                 "modalities": ["text"], "primary_route": "general",
                 "enabled": True,
             }]
-            data["intents_version"] = 1
             data["desktop_api_url"] = "https://example.com/v1/chat/completions"
             path.write_text(json.dumps(data), encoding="utf-8")
-            with patch("clipllm02.desktop.settings_window.user_settings_path",
-                       return_value=path):
+            with patch("clipllm02.studio.config.config_path", return_value=path):
                 settings = load_user_settings()
-            self.assertEqual(settings.get("intents_version"), INTENTS_VERSION)
+            self.assertEqual(settings.get("config_version"), CONFIG_VERSION)
             self.assertIsNotNone(settings.intent("chem.naming"))
             self.assertIsNone(settings.intent("stale"))
             self.assertEqual(settings.get("desktop_api_url"),

@@ -225,6 +225,9 @@ class IntentOption:
     applicable: dict[str, Any] | None = None
     primary_route: str | None = None
     prompt_override: str = ""
+    # 图片方式识别完之后怎么继续："" 直接显示识别结果；"auto" 按文本类别
+    # 自动选模板；其他值是文本模板 id（例如 "latex"）
+    followup_route: str = ""
     includes: tuple[dict[str, Any], ...] = ()
     default_format: str = "static"
     supported_formats: tuple[str, ...] = ("static",)
@@ -246,6 +249,7 @@ class IntentOption:
             applicable=data.get("applicable"),
             primary_route=data.get("primary_route"),
             prompt_override=str(data.get("prompt_override") or ""),
+            followup_route=str(data.get("followup_route") or ""),
             includes=tuple(data.get("includes") or ()),
             default_format=str(data.get("default_format", "static")),
             supported_formats=tuple(data.get("supported_formats") or ("static",)),
@@ -293,7 +297,24 @@ class IntentOption:
             "supported_formats": list(self.supported_formats),
             "primary_route": self.primary_route,
             "prompt_override": self.prompt_override,
+            "followup_route": self.followup_route,
         }
+
+
+def intent_prompt_source(item: dict[str, Any]) -> str:
+    """查询方式的提示词来源：留空即复用主路由模板，填了就是专属提示词。
+
+    与 ``prompts.compose_prompt`` / ``studio.vision.intent_vision_prompt``
+    的优先级（override > 路由模板）严格一致。不看 ``use_legacy_template``：
+    那个标记只说明提示词来自旧脚本的 9 套，不能拿来判断当前到底复用了模板
+    还是用了专属提示词——否则界面上会写着「复用模板」，实际发的却是专属内容。
+    """
+    if item.get("free_input_only"):
+        return "自由输入"
+    if item.get("custom"):
+        return "自定义"
+    return ("专属提示词" if str(item.get("prompt_override") or "").strip()
+            else "复用模板")
 
 
 @dataclass(frozen=True)

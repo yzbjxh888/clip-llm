@@ -35,7 +35,6 @@
     "enabled": true,
     "show_other_domains": true,
     "show_disabled_items": "grayed",
-    "recommended_limit": 6,
     "other_per_domain": 2,
     "remember_last_intent": true,
     "default_intent_policy": "last_used",
@@ -120,10 +119,10 @@
 
 | 页签 | 状态 | 内容 |
 |---|---|---|
-| 通用 | 改 | 「触发策略」下拉增加 `menu`；菜单总开关（自动提交、记忆上次意图、显示已禁用项、推荐条数、超时） |
+| 通用 | 改 | 「触发策略」下拉增加 `menu`；菜单总开关（自动提交、记忆上次意图、显示已禁用项、超时） |
 | **意图菜单** | **新增** | 左 `QTreeWidget` 按 domain 分组列出全部 intent；右 `QFormLayout`：启用勾选、显示名、hint、绑定主路由（下拉来自 `routes.d`）、includes 编辑表（增删 route+section）、默认呈现、支持呈现、排序、快捷键、适用模态、token 预算。勾选框联动"提示词不可编辑"，复用 0.1 `_sync_prompt_lock()` |
 | **搜索与跳转** | **新增** | provider 表格（启用 / 名称 / URL 模板 / 模式 / 浏览器 / 参数 / 顺序 / 适用上下文多选）；默认 provider 下拉；卡片内搜索按钮开关；查询词最大长度；「测试打开」按钮 |
-| **输入与拦截** | **新增** | 分级策略表：每条拦截一行，级别下拉 `BLOCK/WARN/CONFIRM/ALLOW` + 只读判别特征说明（来自 `feature_catalog()`）+ 阈值输入；图片与文本冲突策略；菜单模式下禁用自动识别；AssetStore TTL；旧 `block_url/email/path/...` 五个开关迁移进来并标注"旧字段兼容" |
+| **输入与拦截** | **新增** | 分级策略表：每条拦截一行，级别只有 `BLOCK/ALLOW` 两级（勾选＝拦截）+ 只读判别特征说明（来自 `feature_catalog()`）+ 阈值输入；图片与文本冲突策略；菜单模式下禁用自动识别；AssetStore TTL；旧 `block_url/email/path/...` 五个开关迁移进来并标注"旧字段兼容" |
 | 分类路由与提示词 | 改 | `cb_pack_enabled` 旁增加"禁用后行为"下拉 `block/fallback/hide_from_menu`；显示该路由被哪些 intent 引用 |
 | 分类规则 | 改 | 规则表增加"级别"列与"所属 domain"列；`english_sentence` 规则加提示"菜单模式下建议关闭" |
 | 图片识别 | 改 | 增加"图片意图"列表（启用/排序）、"原图保留"开关、视觉意图提示词模板编辑 |
@@ -145,8 +144,7 @@
 | `includes[].sections` 必须在目标 schema 的 `fields` 中 | intents |
 | `includes` 无环（拓扑排序） | intents |
 | `token_budget ≤ profile.max_tokens` | intents |
-| `policy[].level ∈ {BLOCK,WARN,CONFIRM,ALLOW}`；`empty`/`too_long`/`daily_limit` 不可下调 | policy |
-| `menu.recommended_limit ∈ [1,12]`（前 9 项带数字键，其余可点击） | general |
+| `policy[].level ∈ {BLOCK,ALLOW}`；`empty`/`too_long`/`daily_limit` 不可下调 | policy |
 | `trigger_policy=menu` 时 `image_auto_recognize` 必须为 false | image |
 | 规则/路由引用的特征名必须在 `FEATURES` 中（0.1 已有） | rules |
 | 未启用的路由/意图不允许修改其提示词（0.1 已有，数据层再拒一次） | intents |
@@ -174,7 +172,7 @@
 | 关闭"词组查询" | `break the ice` 不再走 `en_phrase`，单词查询照常 |
 | 新增一条 intent（只改配置） | 出现在菜单、可提交、不改 `app.py` / `pipeline.py` |
 | 新增一个搜索 provider | 出现在右键子菜单与卡片锚点、不改 `popup.py` |
-| 把 `url` 从 BLOCK 改 WARN | 复制 URL 弹菜单并显示警告条，用户可选"总结网页" |
+| 把 `url` 从 BLOCK 改为 ALLOW | 复制 URL 正常弹菜单，用户可选"总结网页" |
 | 禁用某 `RoutePack` | 按 `hide_from_menu` 从菜单与下拉消失，旧缓存保留 |
 | 改 intent 的 `includes` | 缓存立即失效（`composition_hash` 变化） |
 | 菜单模式下开 `image_auto_recognize` | 设置页直接拒绝并给提示 |

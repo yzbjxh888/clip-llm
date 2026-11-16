@@ -22,9 +22,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ..models import intent_prompt_source
 from ..settings import Settings, load_defaults, validate
 from .config import (
-    DEFAULT_HOTKEYS, DEFAULT_VISION_PROMPT, HOTKEY_LABELS, load_legacy, save_config,
+    DEFAULT_HOTKEYS, HOTKEY_LABELS, load_legacy, save_config,
 )
 from .theme_tokens import (
     QSS_SCROLL_AREA, TYPO_BODY_MD, TYPO_BODY_SM, TYPO_HEADLINE_MD,
@@ -261,6 +262,8 @@ class SettingsDialog(QDialog):
         if self.intent_route_combo.count() == 0:
             self.intent_route_combo.addItem("通用解析", "general")
         self.intent_route_combo.currentIndexChanged.connect(self._flush_intent)
+        self.intent_route_combo.currentIndexChanged.connect(
+            self._sync_followup_visibility)
         form.addRow("主路由（提示词来源）", self.intent_route_combo)
         self.intent_domain_combo = QComboBox()
         for did, label in DOMAIN_ORDER:
@@ -285,6 +288,16 @@ class SettingsDialog(QDialog):
             "该查询方式的提示词；留空则直接复用主路由模板（含旧脚本 9 套完整 Prompt）")
         self.intent_prompt.textChanged.connect(self._flush_intent)
         form.addRow("提示词", self.intent_prompt)
+        # 仅图片方式：识别完成后是否继续进入文本模板（选项里的模板动态来自
+        # 提示词模板页，新增模板后这里立刻可选）
+        self.intent_followup_combo = QComboBox()
+        self.intent_followup_combo.currentIndexChanged.connect(self._flush_intent)
+        form.addRow("识别后", self.intent_followup_combo)
+        self.intent_followup_hint = QLabel("")
+        self.intent_followup_hint.setObjectName("sectionHint")
+        self.intent_followup_hint.setWordWrap(True)
+        form.addRow(self.intent_followup_hint)
+        self.intent_form = form
         self.legacy_hint = QLabel("")
         self.legacy_hint.setObjectName("sectionHint")
         self.legacy_hint.setWordWrap(True)
@@ -327,9 +340,7 @@ class SettingsDialog(QDialog):
             top.setData(0, Qt.UserRole, ("domain", route_id))
             for item in intents:
                 enabled = bool(item.get("enabled", True))
-                source = "自定义" if item.get("custom") else (
-                    "复用模板" if item.get("use_legacy_template")
-                    or not item.get("prompt_override") else "专属提示词")
+                source = intent_prompt_source(item)
                 child = QTreeWidgetItem(
                     top, [item.get("label", item.get("id")), source])
                 child.setData(0, Qt.UserRole, ("intent", item.get("id")))
@@ -385,6 +396,8 @@ class SettingsDialog(QDialog):
         self.intent_enabled.setChecked(bool(data.get("enabled", True)))
         self.intent_label_edit.setText(str(data.get("label", "")))
         self.intent_hint_edit.setText(str(data.get("hint", "")))
+        self._fill_intent_routes(
+            image_only="image" in (data.get("domains") or ()))
         index = self.intent_route_combo.findData(
             str(data.get("primary_route") or "general"))
         self.intent_route_combo.setCurrentIndex(max(0, index))
@@ -395,6 +408,11 @@ class SettingsDialog(QDialog):
         self.intent_includes_edit.setText(format_includes(data.get("includes")))
         self.intent_format_combo.setCurrentText(str(data.get("default_format", "static")))
         self.intent_prompt.setPlainText(str(data.get("prompt_override", "")))
+        self._rebuild_followup_options()
+        index = self.intent_followup_combo.findData(
+            str(data.get("followup_route") or ""))
+        self.intent_followup_combo.setCurrentIndex(max(0, index))
+        self._sync_followup_visibility()
         if not data.get("prompt_override"):
             self.legacy_hint.setText("当前复用主路由模板（提示词留空即生效）")
         else:
@@ -414,15 +432,87 @@ class SettingsDialog(QDialog):
         data["domains"] = [self.intent_domain_combo.currentData() or "*"]
         data["order"] = self.intent_order_spin.value()
         data["includes"] = parse_includes(self.intent_includes_edit.text())
-        data["default_format"] = self.intent_format_combo.currentText()
-        data["supported_formats"] = [data["default_format"]]
+        default_format = self.intent_format_combo.currentText()
+        formats = list(data.get("supported_formats") or [])
+        if default_format not in formats:
+            formats.insert(0, default_format)
+        data["default_format"] = default_format
+        data["supported_formats"] = formats or [default_format]
         data["prompt_override"] = self.intent_prompt.toPlainText()
+        data["followup_route"] = str(self.intent_followup_combo.currentData() or "")
+        self._refresh_followup_hint()
         self.legacy_hint.setText(
             "当前复用主路由模板（提示词留空即生效）"
             if not data["prompt_override"] else "当前使用本条专属提示词")
         current = self.prompt_tree.currentItem()
         if current is not None:
             current.setText(0, data["label"])
+
+    def _fill_intent_routes(self, *, image_only: bool) -> None:
+        """主路由下拉只列同类模板：图片方式只能挂图片模板，反之亦然。"""
+        combo = self.intent_route_combo
+        current = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        for rid in sorted(self.data.get("routes", {})):
+            pack = self.data["routes"][rid]
+            if bool(pack.get("vision")) != image_only:
+                continue
+            combo.addItem(str(pack.get("label") or rid), rid)
+        if combo.count() == 0:                     # 没有同类模板时不留空下拉
+            combo.addItem("通用解析", "general")
+        combo.blockSignals(False)
+        if current:
+            combo.setCurrentIndex(max(0, combo.findData(current)))
+
+    def _route_accepts_followup(self, route_id: str) -> bool:
+        """该模板下有没有可承接二次查询的启用方式（图片方式不算）。"""
+        return any(i.get("enabled", True) and "image" not in (i.get("domains") or [])
+                   and i.get("primary_route") == route_id
+                   for i in self.data.get("intents", []))
+
+    def _rebuild_followup_options(self) -> None:
+        """识别后：直出 / 自动判类 / 指定某个文本模板（模板池动态生成）。"""
+        combo = self.intent_followup_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("直接展示识别结果", "")
+        combo.addItem("自动判断文本类别后继续", "auto")
+        for rid in sorted(self.data.get("routes", {})):
+            pack = self.data["routes"][rid]
+            if pack.get("vision") or not pack.get("enabled", True):
+                continue
+            if not self._route_accepts_followup(rid):
+                continue
+            combo.addItem(f"指定模板：{pack.get('label') or rid}", rid)
+        combo.blockSignals(False)
+
+    def _sync_followup_visibility(self, *_args) -> None:
+        """「识别后」只对图片方式有意义，文本方式直接整行隐藏。"""
+        route = (self.data.get("routes", {})
+                 .get(str(self.intent_route_combo.currentData() or "")) or {})
+        vision = bool(route.get("vision"))
+        if hasattr(self, "intent_form"):
+            self.intent_form.setRowVisible(self.intent_followup_combo, vision)
+            self.intent_form.setRowVisible(self.intent_followup_hint, vision)
+        self._refresh_followup_hint()
+
+    def _refresh_followup_hint(self) -> None:
+        if not hasattr(self, "intent_followup_hint"):
+            return
+        value = str(self.intent_followup_combo.currentData() or "")
+        if not value:
+            text = ("视觉模型的结果直接展示。表格 / 解释 / 标注这类"
+                    "「模型已给成品」的方式选这个。")
+        elif value == "auto":
+            text = ("按识别出的文字自动判类别，用该类别的默认查询方式继续；"
+                    "中间那次初判自动完成，用户只点一次。")
+        else:
+            label = str((self.data.get("routes", {}).get(value) or {})
+                        .get("label") or value)
+            text = (f"固定用「{label}」模板下排序最前的那条查询方式继续，"
+                    "不再让分类器判断。")
+        self.intent_followup_hint.setText(text)
 
     def _current_domain_id(self) -> str:
         item = self.prompt_tree.currentItem()
@@ -510,12 +600,10 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(w)
         layout.setSpacing(8)
         layout.addWidget(self._note(
-            "这里改的是「怎么解释」。查询方式不填提示词，就会用这一份。"))
+            "文本模板决定「怎么解释」；图片模板就是识别图片时发给视觉模型的"
+            "提示词。查询方式不填提示词，就会用所属模板这一份。"))
         row = QHBoxLayout()
         self.route_combo = QComboBox()
-        for route_id in sorted(self.data.get("routes", {})):
-            pack = self.data["routes"][route_id]
-            self.route_combo.addItem(str(pack.get("label") or route_id), route_id)
         self.route_combo.currentIndexChanged.connect(self._load_route_prompt)
         row.addWidget(self.route_combo, 1)
         self.add_route_button = QPushButton("＋ 新增模板")
@@ -525,6 +613,12 @@ class SettingsDialog(QDialog):
         self.del_route_button.clicked.connect(self._delete_route)
         row.addWidget(self.del_route_button)
         layout.addLayout(row)
+
+        self.route_kind_hint = QLabel("")
+        self.route_kind_hint.setObjectName("sectionHint")
+        self.route_kind_hint.setWordWrap(True)
+        layout.addWidget(self.route_kind_hint)
+
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("显示名"))
         self.route_label_edit = QLineEdit()
@@ -535,22 +629,101 @@ class SettingsDialog(QDialog):
         self.route_prompt = QPlainTextEdit()
         self.route_prompt.textChanged.connect(self._save_route_prompt)
         layout.addWidget(self.route_prompt, 2)
-        layout.addWidget(QLabel("图像识别（视觉模型）提示词"))
-        self.vision_prompt = QPlainTextEdit()
-        self.vision_prompt.setPlainText(
-            self.data.get("desktop_vision_prompt", DEFAULT_VISION_PROMPT))
-        self.vision_prompt.textChanged.connect(
-            lambda: self.data.__setitem__("desktop_vision_prompt",
-                                          self.vision_prompt.toPlainText()))
-        layout.addWidget(self.vision_prompt, 1)
+
+        vision_row = QHBoxLayout()
+        vision_row.addWidget(QLabel("图片默认排最前"))
+        self.image_default_combo = QComboBox()
+        for intent_id, label in self._image_intents():
+            self.image_default_combo.addItem(label, intent_id)
+        current = str(self.data.get("desktop_vision_intent", "image.ocr"))
+        index = self.image_default_combo.findData(current)
+        self.image_default_combo.setCurrentIndex(max(index, 0))
+        self.image_default_combo.currentIndexChanged.connect(
+            self._save_vision_intent)
+        vision_row.addWidget(self.image_default_combo, 1)
+        layout.addLayout(vision_row)
+
+        self._rebuild_route_combo()
         return w
+
+    def _image_intents(self) -> list[tuple[str, str]]:
+        """图片查询方式（截图后可选的那几条），按设置顺序。"""
+        return [(i["id"], str(i.get("label") or i["id"]))
+                for i in sorted(self.data.get("intents", []),
+                                key=lambda i: i.get("order", 0))
+                if "image" in (i.get("domains") or []) and i.get("enabled", True)]
+
+    def _rebuild_route_combo(self, select: str | None = None) -> None:
+        """按「文本模板 / 图片模板」分组重建下拉；组标题不可选。"""
+        combo = self.route_combo
+        current = select or combo.currentData()
+        routes = self.data.get("routes", {})
+        text_routes = [rid for rid in sorted(routes)
+                       if not routes[rid].get("vision")]
+        image_routes = [rid for rid in sorted(routes) if routes[rid].get("vision")]
+        combo.blockSignals(True)
+        combo.clear()
+        for title, ids in (("—— 文本模板（分类器判定）——", text_routes),
+                           ("—— 图片模板（截图后直接判定）——", image_routes)):
+            if not ids:
+                continue
+            combo.addItem(title, None)
+            model = combo.model()
+            header = model.item(combo.count() - 1) if model is not None else None
+            if header is not None:
+                header.setEnabled(False)       # 组标题只是分隔，不可选中
+            for rid in ids:
+                combo.addItem(str(routes[rid].get("label") or rid), rid)
+        combo.blockSignals(False)
+        if current:
+            index = combo.findData(current)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        self._load_route_prompt(combo.currentIndex())
+
+    def _save_vision_intent(self, _index: int) -> None:
+        combo = getattr(self, "image_default_combo", None)
+        intent_id = combo.currentData() if combo is not None else None
+        if intent_id:
+            self.data["desktop_vision_intent"] = str(intent_id)
+
+    def _set_vision_enabled(self, value: bool) -> None:
+        self.data.setdefault("image", {})["vision_enabled"] = bool(value)
+
+    def _set_auto_continue(self, value: bool) -> None:
+        self.data.setdefault("image", {})["auto_continue"] = bool(value)
 
     def _load_route_prompt(self, _index: int) -> None:
         route_id = self.route_combo.currentData()
         if not route_id:
             return
         route = self.data.get("routes", {}).get(route_id, {})
+        # 这一份模板到底有没有被用上：留空的查询方式复用它，写了专属提示词的不用
+        members = [i for i in self.data.get("intents", [])
+                   if i.get("primary_route") == route_id]
+        reusing = [i for i in members
+                   if not str(i.get("prompt_override") or "").strip()]
         text = self.data["route_prompts"].get(route_id, route.get("prompt", ""))
+        if str(text).strip():
+            usage = f"当前 {len(reusing)}/{len(members)} 条查询方式复用此模板"
+            if len(reusing) < len(members):
+                usage += "，其余用各自的专属提示词"
+            usage += "。"
+        else:
+            usage = ("当前模板不提供提示词（留空）——每条查询方式必须自带"
+                     "提示词，否则保存时会报错")
+        if bool(route.get("vision")):
+            default = (self.image_default_combo.currentText()
+                       if hasattr(self, "image_default_combo") else "")
+            self.route_kind_hint.setText(
+                "图片识别：这是所有图片方式的兜底契约——只写跨方式都成立的"
+                "规则（不要编造、公式用 LaTeX）；JSON 字段、坐标、包裹符这类"
+                "格式要求写在各条查询方式自己的提示词里。" + usage
+                + f"当前默认排在最前：{default}。")
+        else:
+            self.route_kind_hint.setText(
+                "文本模板：文本查询时拼接的系统提示词（查询方式留空时使用）。"
+                + usage)
         self.route_prompt.blockSignals(True)
         self.route_prompt.setPlainText(text)
         self.route_prompt.blockSignals(False)
@@ -581,8 +754,10 @@ class SettingsDialog(QDialog):
 
     def _save_route_prompt(self) -> None:
         route_id = self.route_combo.currentData()
-        if route_id:
-            self.data["route_prompts"][route_id] = self.route_prompt.toPlainText()
+        if not route_id:
+            return
+        # 空也是有效状态：这份模板不提供提示词（校验会要求方式自带）
+        self.data["route_prompts"][route_id] = self.route_prompt.toPlainText()
 
     def _add_route(self) -> None:
         text, ok = QInputDialog.getText(self, "新增模板",
@@ -616,8 +791,7 @@ class SettingsDialog(QDialog):
                             "query_type": "free", "kind": "route",
                             "prompt": base_prompt,
                             "sections": [], "fields": []}
-        self.route_combo.addItem(base_label, route_id)
-        self.route_combo.setCurrentIndex(self.route_combo.count() - 1)
+        self._rebuild_route_combo(route_id)
         self._rebuild_switches()
         self.legacy_hint.setText(
             f"已新增模板 {route_id}（{base_label}），类别总开关已同步。")
@@ -637,9 +811,7 @@ class SettingsDialog(QDialog):
             return
         self.data.get("routes", {}).pop(route_id, None)
         self.data.get("route_prompts", {}).pop(route_id, None)
-        index = self.route_combo.currentIndex()
-        self.route_combo.removeItem(index)
-        self._load_route_prompt(self.route_combo.currentIndex())
+        self._rebuild_route_combo()
         self._rebuild_switches()
         self.legacy_hint.setText(f"已删除模板 {route_id}，类别总开关已同步。")
 
@@ -811,6 +983,19 @@ class SettingsDialog(QDialog):
             edit.textChanged.connect(lambda v, k=key: self.data.__setitem__(k, v))
             self._edits[key] = edit
             form.addRow(label, edit)
+        self.vision_enabled_check = QCheckBox(
+            "启用图片识别（截图/复制图片时进入图片查询方式，选模板后才识别）")
+        self.vision_enabled_check.setChecked(
+            bool((self.data.get("image") or {}).get("vision_enabled", True)))
+        self.vision_enabled_check.toggled.connect(self._set_vision_enabled)
+        form.addRow(self.vision_enabled_check)
+        self.auto_continue_check = QCheckBox(
+            "识别出的文字自动按初判结果继续解释（图片只点一次；"
+            "关掉则先看识别结果，再手动选模板）")
+        self.auto_continue_check.setChecked(
+            bool((self.data.get("image") or {}).get("auto_continue", True)))
+        self.auto_continue_check.toggled.connect(self._set_auto_continue)
+        form.addRow(self.auto_continue_check)
         self.max_tokens_spin = QSpinBox()
         self.max_tokens_spin.setRange(256, 32768)
         self.max_tokens_spin.setValue(int(self.data.get("desktop_max_tokens", 2048)))
@@ -829,11 +1014,11 @@ class SettingsDialog(QDialog):
         layout.setSpacing(10)
         layout.addWidget(self._section_title("拦截规则"))
         layout.addWidget(self._note(
-            "四种处理：直接拒绝 / 提醒风险 / 先问我 / 放行。"
-            "选中一行就能改它的命中方式。"))
+            "勾选＝拦截（不弹窗、不发请求），取消勾选＝放行。"
+            "标注「固定」的项是硬性上限，不可关闭；选中一行可以改它的命中方式。"))
         self.policy_tree = QTreeWidget()
         self.policy_tree.setColumnCount(3)
-        self.policy_tree.setHeaderLabels(["规则", "说明", "级别"])
+        self.policy_tree.setHeaderLabels(["规则", "说明", "拦截"])
         self.policy_tree.setRootIsDecorated(False)
         self.policy_tree.setAlternatingRowColors(True)
         self.policy_tree.setUniformRowHeights(True)
@@ -842,7 +1027,8 @@ class SettingsDialog(QDialog):
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.policy_tree.currentItemChanged.connect(self._on_policy_selected)
-        self.policy_combos: dict[str, QComboBox] = {}
+        self.policy_tree.itemChanged.connect(self._on_policy_item_changed)
+        self.policy_rows: dict[str, QTreeWidgetItem] = {}
         layout.addWidget(self.policy_tree, 1)
 
         button_row = QHBoxLayout()
@@ -889,26 +1075,43 @@ class SettingsDialog(QDialog):
     def _populate_policy_table(self) -> None:
         self.policy_tree.blockSignals(True)
         self.policy_tree.clear()
-        self.policy_combos = {}
+        self.policy_rows = {}
         rules = self.data.get("policy", {}).get("rules", {})
         for rule_id, rule in rules.items():
+            label = str(rule.get("label") or rule_id)
             desc = str(rule.get("description", ""))
-            item = QTreeWidgetItem([str(rule_id), desc, ""])
+            item = QTreeWidgetItem([label, desc, ""])
+            item.setToolTip(0, f"{label}（{rule_id}）")
             item.setToolTip(1, desc)
             item.setData(0, Qt.UserRole, str(rule_id))
+            locked = bool(rule.get("locked", False))
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            enabled = rule.get("enabled", True) is not False or locked
+            item.setCheckState(2, Qt.Checked if enabled else Qt.Unchecked)
+            if locked:
+                item.setToolTip(2, "硬性上限，不可关闭")
             self.policy_tree.addTopLevelItem(item)
-            combo = QComboBox()
-            combo.addItems(["BLOCK", "WARN", "CONFIRM", "ALLOW"])
-            combo.setCurrentText(str(rule.get("level", "ALLOW")))
-            combo.setEnabled(not rule.get("locked", False))
-            combo.currentTextChanged.connect(
-                lambda v, rid=rule_id:
-                self.data["policy"]["rules"][rid].__setitem__("level", v))
-            self.policy_combos[rule_id] = combo
-            self.policy_tree.setItemWidget(item, 2, combo)
+            self.policy_rows[str(rule_id)] = item
         self.policy_tree.blockSignals(False)
         if self.policy_tree.topLevelItemCount():
             self.policy_tree.setCurrentItem(self.policy_tree.topLevelItem(0))
+
+    def _on_policy_item_changed(self, item: QTreeWidgetItem,
+                                column: int) -> None:
+        """勾选＝拦截，取消勾选＝放行；locked 项不可改。"""
+        if column != 2:
+            return
+        rid = str(item.data(0, Qt.UserRole) or "")
+        rule = self.data.get("policy", {}).get("rules", {}).get(rid)
+        if rule is None:
+            return
+        if rule.get("locked", False):
+            # 硬性上限：点了也弹回勾选状态，不写入草稿
+            self.policy_tree.blockSignals(True)
+            item.setCheckState(2, Qt.Checked)
+            self.policy_tree.blockSignals(False)
+            return
+        rule["enabled"] = item.checkState(2) == Qt.Checked
 
     def _on_policy_selected(self, current: QTreeWidgetItem | None,
                             _previous: QTreeWidgetItem | None) -> None:
@@ -953,8 +1156,9 @@ class SettingsDialog(QDialog):
         while f"custom_{index}" in rules:
             index += 1
         rid = f"custom_{index}"
-        rules[rid] = {"detector": "regex", "pattern": "", "level": "WARN",
-                      "description": "新规则"}
+        rules[rid] = {"label": "自定义规则", "detector": "regex", "pattern": "",
+                      "level": "BLOCK", "enabled": True,
+                      "description": "新规则：命中即不弹窗"}
         self._populate_policy_table()
         for i in range(self.policy_tree.topLevelItemCount()):
             item = self.policy_tree.topLevelItem(i)
@@ -1335,7 +1539,7 @@ class SettingsDialog(QDialog):
             bool(self.data.get("desktop_new_query_in_new_tab", False)))
         self.auto_hide_check.setChecked(
             bool(self.data.get("desktop_auto_hide", True)))
-        self.dup_spin.setValue(int(self.data.get("desktop_dup_ttl", 300)))
+        self.dup_spin.setValue(int(self.data.get("desktop_dup_ttl", 1)))
         self.max_tokens_spin.setValue(int(self.data.get("desktop_max_tokens", 2048)))
         self._reload_tree()
         self.select_first_intent()
@@ -1351,7 +1555,8 @@ class SettingsDialog(QDialog):
             self.status_hint.setText("⚠ " + conflict)
             return False
         self.data["hotkeys"] = hotkeys
-        self.data["desktop_vision_prompt"] = self.vision_prompt.toPlainText()
+        # 图片提示词的唯一编辑入口在「其他视角」页（写入 route_prompts），
+        # desktop_vision_prompt 仅作模板为空时的兜底，不再由设置页覆盖。
         errors = validate(Settings(self.data))
         if errors:
             message = "配置校验失败：" + "；".join(e.message for e in errors[:3])

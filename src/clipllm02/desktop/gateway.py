@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import base64
 import html
 import json
 import os
@@ -133,6 +134,7 @@ class Gateway:
 
     def explain(self, prompt: str, content: str, *,
                 history=None,
+                image: tuple[bytes, str] | None = None,
                 cancel: threading.Event | None = None) -> GatewayResult:
         """``history`` 是追问时的多轮上下文：``[{role, content}, ...]``。
 
@@ -148,7 +150,18 @@ class Gateway:
             text = item.get("content")
             if role in ("user", "assistant") and isinstance(text, str) and text:
                 messages.append({"role": role, "content": text})
-        messages.append({"role": "user", "content": content})
+        user_content: object = content
+        if image is not None:
+            # 追问带原图：文本模型若是多模态（如 gemini-flash-lite），
+            # 它能重新看图，不必依赖上一轮那段可能不准的答案。
+            data, mime = image
+            user_content = [
+                {"type": "text", "text": content},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{mime};base64,"
+                                      f"{base64.b64encode(data).decode('ascii')}"}},
+            ]
+        messages.append({"role": "user", "content": user_content})
         payload = {
             "model": self.config.model,
             "messages": messages,
@@ -182,6 +195,10 @@ class Gateway:
                                      error="模型返回内容为空")
             return GatewayResult(html=render_response(cleaned), ok=True, raw=cleaned)
         except urllib.error.HTTPError as exc:
+            if image is not None and exc.code in (400, 404, 415, 422):
+                # 文本模型不支持图片输入：去掉图重发一次，别让追问直接失败
+                return self.explain(prompt, content, history=history,
+                                    cancel=cancel)
             return GatewayResult(html="", ok=False, error=f"HTTP {exc.code} {exc.reason}")
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             return GatewayResult(html="", ok=False, error=f"网络请求失败：{exc}")

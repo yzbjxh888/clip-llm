@@ -15,6 +15,7 @@ from pathlib import Path
 from ..settings import Settings, load_defaults, load_settings
 
 CONFIG_VERSION = 7
+DEFAULT_DESKTOP_DUP_TTL = 1
 # 历次出厂搜索源的 id。老配置里若只有这些（说明用户没自定义过），升级时
 # 直接换成最新出厂值；含 custom.* 等自定义项则原样保留。
 _FACTORY_PROVIDER_IDS = {
@@ -82,18 +83,29 @@ def atomic_write(path: Path, data: dict) -> None:
 
 
 def _merge_intents(factory: dict, user: dict) -> list[dict]:
+    """按 id 合并：结构取出厂，用户改过的字段一律保留，自定义项不丢。
+
+    旧实现只保留 6 个字段，且完全丢弃 user 独有的 ``custom.*`` 意图；
+    升级一次就会静默删掉用户新建的查询方式和 hint/domains/主路由等修改。
+    """
     old = {i.get("id"): i for i in (user.get("intents") or [])
            if isinstance(i, dict)}
-    merged = []
+    merged: list[dict] = []
+    factory_ids: set[str] = set()
     for item in factory.get("intents") or []:
         entry = copy.deepcopy(item)
         previous = old.get(entry.get("id"))
         if previous:
-            for key in ("enabled", "prompt_override", "order", "default_format",
-                        "supported_formats", "label"):
-                if key in previous:
-                    entry[key] = previous[key]
+            for key, value in previous.items():
+                if key != "id":
+                    entry[key] = copy.deepcopy(value)
         merged.append(entry)
+        factory_ids.add(str(entry.get("id")))
+    for intent_id, item in old.items():
+        if intent_id in factory_ids:
+            continue
+        if item.get("custom") is True or str(intent_id).startswith("custom."):
+            merged.append(copy.deepcopy(item))
     return merged
 
 
@@ -105,10 +117,11 @@ def load_config() -> Settings:
             factory["routes"][route_id]["prompt"] = pack["prompt"]
     factory.setdefault("config_version", CONFIG_VERSION)
     factory.setdefault("desktop_vision_prompt", DEFAULT_VISION_PROMPT)
+    factory.setdefault("desktop_vision_intent", "image.ocr")
     factory.setdefault("desktop_font_size", 14)
     factory.setdefault("desktop_dark_theme", False)
     factory.setdefault("desktop_new_query_in_new_tab", False)
-    factory.setdefault("desktop_dup_ttl", 1)   # 1s 防抖：重复复制相同词也应再弹
+    factory.setdefault("desktop_dup_ttl", DEFAULT_DESKTOP_DUP_TTL)  # 1s 防抖
     factory.setdefault("desktop_auto_hide", True)
     # 双模式（对齐 GoldenDict-ng 的 pinButton）：
     # True  = 默认 pinned：Qt.Window 常驻、Alt+Tab 可见、堆叠交 WM、不自动
@@ -134,16 +147,22 @@ def load_config() -> Settings:
         return settings_from_data(factory)
 
     changed = user.get("config_version") != CONFIG_VERSION
+    # 版本已是最新但缺键的旧配置也必须补齐默认；此前 setdefault 被关在
+    # `if changed` 里，导致去重时间回退到 settings_from_data 的旧默认值。
+    for key in ("desktop_vision_prompt", "desktop_font_size",
+                "desktop_dark_theme", "desktop_new_query_in_new_tab",
+                "desktop_dup_ttl"):
+        if key not in user:
+            user[key] = factory[key]
+            changed = True
+    hotkeys = dict(DEFAULT_HOTKEYS)
+    hotkeys.update(user.get("hotkeys") or {})
+    if user.get("hotkeys") != hotkeys:
+        user["hotkeys"] = hotkeys
+        changed = True
     if changed:
         user["intents"] = _merge_intents(factory, user)
         user["config_version"] = CONFIG_VERSION
-        for key in ("desktop_vision_prompt", "desktop_font_size",
-                    "desktop_dark_theme", "desktop_new_query_in_new_tab",
-                    "desktop_dup_ttl"):
-            user.setdefault(key, factory[key])
-        hotkeys = dict(DEFAULT_HOTKEYS)
-        hotkeys.update(user.get("hotkeys") or {})
-        user["hotkeys"] = hotkeys
         # 搜索源随出厂值升级。老配置里若全是历次出厂项（没自定义过），
         # 直接用新出厂值；用户自己加过搜索源则原样保留。
         old = user.get("search_providers") or []
@@ -158,16 +177,11 @@ def load_config() -> Settings:
     menu = user.setdefault("menu", {})
     factory_menu = factory.get("menu", {})
     migrated = False
-    if menu.get("recommended_limit") in (6, 24):
-        # 24 是早期一次「放宽上限」的迁移值；全量显示已由菜单构建逻辑负责，
-        # 配置值回到出厂范围即可，避免校验失败。
-        menu["recommended_limit"] = factory_menu.get("recommended_limit", 9)
-        migrated = True
     if menu.get("other_per_domain") == 2:
         menu["other_per_domain"] = factory_menu.get("other_per_domain", 3)
         migrated = True
     if user.get("desktop_dup_ttl") == 300:      # 旧默认 300s → 1s 防抖
-        user["desktop_dup_ttl"] = 1
+        user["desktop_dup_ttl"] = DEFAULT_DESKTOP_DUP_TTL
         migrated = True
     # 旧配置的中文长度规则用 has_cn 覆盖全部中文，把句子/段落/疑问
     # 一起压在 20 字闸门下。迁移为「仅术语」，其余三类走新拆分的独立规则；
@@ -195,10 +209,11 @@ def settings_from_data(data: dict) -> Settings:
     legacy = load_legacy()
     merged = copy.deepcopy(data) if isinstance(data, dict) else {}
     merged.setdefault("desktop_vision_prompt", DEFAULT_VISION_PROMPT)
+    merged.setdefault("desktop_vision_intent", "image.ocr")
     merged.setdefault("desktop_font_size", 14)
     merged.setdefault("desktop_dark_theme", False)
     merged.setdefault("desktop_new_query_in_new_tab", False)
-    merged.setdefault("desktop_dup_ttl", 300)
+    merged.setdefault("desktop_dup_ttl", DEFAULT_DESKTOP_DUP_TTL)
     merged.setdefault("desktop_max_tokens", 2048)
     hotkeys = dict(DEFAULT_HOTKEYS)
     hotkeys.update(merged.get("hotkeys") or {})
@@ -216,6 +231,8 @@ def settings_from_data(data: dict) -> Settings:
             settings.routes[route_id]["prompt"] = pack["prompt"]
     for route_id, prompt in (merged.get("route_prompts") or {}).items():
         if route_id in settings.routes:
+            # 空串是「这份模板不提供提示词」的显式选择，照实应用；
+            # 若某条方式也没写提示词，校验会拦住保存。
             settings.routes[route_id]["prompt"] = prompt
     settings.data["desktop_vision_prompt"] = merged["desktop_vision_prompt"]
     settings.data["legacy_rules"] = legacy.get("rules", [])

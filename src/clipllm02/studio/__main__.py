@@ -23,18 +23,21 @@ from pathlib import Path
 GS_SCHEMA = "org.gnome.settings-daemon.plugins.media-keys"
 GS_PATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clipllm02-vision/"
 
-BUILD = "2026-11-15-seven-search"  # 每轮修复递增；启动横幅与托盘 tooltip 均显示
+BUILD = "2026-11-16-review-fixes"  # 每轮修复递增；启动横幅与托盘 tooltip 均显示
 
 
 def check_single_instance() -> None:
     """前台进程单实例：旧实例残留会让托盘/快捷键指向旧代码。
 
-    精确匹配：/proc/<pid>/cmdline 的 argv[0] 必须是 python 解释器且
-    命令行含 clipllm02-desktop——排除 shell / pgrep 自身的误匹配。
+    精确匹配入口脚本名（desktop / studio / classic）或 `python -m` 的模块名
+    正好是 clipllm02.studio / clipllm02.desktop；不会把
+    `clipllm02.studio.input_host` 这类子进程误判为主实例。
     """
     import subprocess
+    script_names = {"clipllm02-desktop", "clipllm02-studio", "clipllm02-classic"}
+    modules = {"clipllm02.studio", "clipllm02.desktop"}
     try:
-        out = subprocess.run(["pgrep", "-f", "clipllm02-desktop"],
+        out = subprocess.run(["pgrep", "-f", "clipllm02"],
                              capture_output=True, timeout=3, check=False)
         candidates = [int(x) for x in out.stdout.split()]
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -51,13 +54,18 @@ def check_single_instance() -> None:
             continue
         if not argv:
             continue
-        interpreter = argv[0].rsplit("/", 1)[-1]
-        if interpreter.startswith("python") and any(
-                "clipllm02-desktop" in a for a in argv[1:]):
+        exe = argv[0].rsplit("/", 1)[-1]
+        matched = exe in script_names
+        if not matched and exe.startswith("python"):
+            matched = any(
+                arg == "-m" and i + 1 < len(argv) and argv[i + 1] in modules
+                for i, arg in enumerate(argv))
+        if matched:
             pids.append(pid)
     if pids:
         print(f"⚠ 已有实例在运行（PID {pids}），旧实例占用着托盘与快捷键。", flush=True)
-        print("  请先：pkill -9 -f clipllm02-desktop  再重新启动。", flush=True)
+        print("  请先：pkill -9 -f 'clipllm02-(desktop|studio|classic)'  再重新启动。",
+              flush=True)
         raise SystemExit(1)
 
 

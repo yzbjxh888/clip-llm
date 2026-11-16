@@ -2,15 +2,15 @@
 
 与 ``policy.preflight`` 分工：
 
-- policy 回答「能不能发请求」（BLOCK / WARN / CONFIRM / ALLOW）；
+- policy 回答「能不能发请求」（BLOCK / ALLOW）；
 - 本模块回答「根据内容特征，最可能属于哪个提示词模板类别」，不做拦截。
 
 类别就是 ``settings.routes`` 的条目（设置页「提示词模板」页逐条编辑，
 可新增/删除）。这里不硬编码类别清单，未来增减模板会自动成为可选类别。
 
-判定结构照搬旧分类器的三层：L0 归一化 → L2 特征 → L3 有序规则表
-（自上而下取第一条 requires 成立且未被任何 veto 否决的规则）。
-新增判定只需往表里插一条并声明 veto，不会静默改判既有分支。
+0.2.7 起，所有谓词只有一处定义（``features.py``）：中文四段派发由
+``cn_*_shape`` 提供，本模块只负责「按证据强度排序 + 声明 veto」，
+不再自己实现 cn_dominant / cn_sent_route 之类的第二套判据。
 """
 from __future__ import annotations
 
@@ -26,9 +26,9 @@ DEFAULT_CATEGORY_LABELS = {
     "chinese_sentence": "中文句解", "chinese_question": "中文答疑",
     "chinese_paragraph": "中文段落", "latex": "LaTeX 公式",
     "code": "代码块", "general": "通用解析",
-    "chem_substance": "化学物质", "image_ocr": "图片文字",
-    "image_table": "图片表格", "image_explain": "图片解释",
-    "image_annotate": "图片标注",
+    "chem_substance": "化学物质",
+    # 图片侧只有一条模板（图片识别），4 条查询方式靠 intent 区分
+    "image": "图片识别",
 }
 
 # 同类别的其他角度优先排在一起；只是排序提示，不参与类别存在性判定。
@@ -40,118 +40,88 @@ CATEGORY_AFFINITY = {
     "en_word": ("en_phrase", "general"), "en_phrase": ("en_word", "general"),
     "latex": ("chem_substance", "code", "general"),
     "chem_substance": ("latex", "general"),
-    "image_ocr": ("latex", "image_table", "image_explain", "image_annotate"),
-    "image_table": ("image_ocr", "image_explain", "image_annotate"),
-    "image_explain": ("image_ocr", "image_table", "image_annotate"),
-    "image_annotate": ("image_ocr", "image_explain", "image_table"),
+    "image": ("latex", "general"),
     "code": ("general", "latex"), "general": ("code", "chinese"),
 }
 
-CN_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
-EN_CHAR_RE = re.compile(r"[A-Za-z]")
-CN_QUESTION_END_RE = re.compile(r"？\s*$")
-CN_SENT_PUNCT_RE = re.compile(r"[。！…]")
-CN_SENT_END_PUNCT_RE = re.compile(r"[。；！…]\s*$")
-CN_END_FULL_STOP_RE = re.compile(r"。\s*$")
-CN_SENT_PUNCT_COUNT_RE = re.compile(r"[。！？…]")
-CN_CLAUSE_PUNCT_RE = re.compile(r"[。？！，；：]")
-CN_DOMINANT_PUNCT_RE = re.compile(r"[。？！，；]")
+# 中文结构 → 提示词模板类别（唯一映射，policy 用同一组特征做长度提示）。
+CN_SHAPE_CATEGORY = {
+    "question": "chinese_question",
+    "paragraph": "chinese_paragraph",
+    "sentence": "chinese_sentence",
+    "term": "chinese",
+}
+
 CITATION_REF_RE = re.compile(
     r"(?:\[|［)\s*(?:\d+(?:\s*[-,–~]\s*\d+)*|[图表注式附]\s*\d+"
     r"(?:\s*[-–]\s*\d+)?)\s*(?:\]|］)")
 CODE_SIGNAL_STRICT_RE = re.compile(r"[=;{}<>|\\`~^_]")
-MULTILINE_CODE_SYM_RE = re.compile(r"=|\{|\}|\[|\]|->|=>|::|//|^\s*#", re.M)
+# 注意不要用「行首 #」：`## 结论` 这类 Markdown 标题会被误判成代码块
+MULTILINE_CODE_SYM_RE = re.compile(r"=|\{|\}|\[|\]|->|=>|::|//", re.M)
 
 
-def _context(text: str, fs, thresholds: dict[str, Any]) -> dict[str, Any]:
-    """L2 扩展特征：把旧分类器特有、0.2 FeatureSet 没有的谓词补齐。"""
-    cn = int(fs.get("cn_count") or 0)
-    en = int(fs.get("en_count") or 0)
-    letters = cn + en
+def _context(fs, thresholds: dict[str, Any]) -> dict[str, Any]:
+    """把 FeatureSet 摊平成规则表可直接读的字典；不新增任何判据。
+
+    这里出现的每个键都必须来自 ``features.py``（单一事实源），只有
+    ``cn_prose`` / ``cn_sentence`` 是本模块的**组合**谓词（用于 veto），
+    组合规则本身也一目了然：代码形态成立时，中文不让位。
+    """
+    text = fs.text
     thresholds = thresholds or {}
-    sent_max = int(thresholds.get("cn_sentence_max", 120))
-    term_max = int(thresholds.get("cn_pure_max", 20))
-    code_max = int(thresholds.get("code_max", 80))
-    min_len = int(thresholds.get("cn_sentence_min_len", 4))
-    dominant_min = int(thresholds.get("cn_dominant_min", 6))
+    cn_dominant = bool(fs.get("cn_dominant"))
 
-    cn_question = bool(CN_QUESTION_END_RE.search(text))
-    ends_cn = bool(CN_SENT_END_PUNCT_RE.search(text))
-    ends_full_stop = bool(CN_END_FULL_STOP_RE.search(text))
-    has_cn_sent_punct = bool(CN_SENT_PUNCT_RE.search(text))
-    # 旧分类器 CN_PUNCT_END_ONLY=1：只认以句末标点收尾的输入。
-    cn_sent_route = ends_full_stop or (ends_cn and letters >= min_len)
-    punct_count = len(CN_SENT_PUNCT_COUNT_RE.findall(text))
-    cn_para_route = ends_cn and letters > sent_max and punct_count >= 1
-    cn_dominant = cn > dominant_min or bool(CN_DOMINANT_PUNCT_RE.search(text))
-    cn_nl_route = (cn_question or cn_sent_route or cn_para_route
-                   or (cn_dominant and letters > sent_max))
+    shape = None
+    if fs.get("cn_question_shape"):
+        shape = "question"
+    elif fs.get("cn_paragraph_shape"):
+        shape = "paragraph"
+    elif fs.get("cn_sentence_shape"):
+        shape = "sentence"
+    elif fs.get("cn_term_shape"):
+        shape = "term"
+
+    # 「中文是否为自然句」只看**结构性**代码证据（多行块 / 高代码分）：
+    # 句子里夹一个 `f(x)` 会让 code_like 成立，但那不改变它是个中文句子。
+    code_structural = bool(fs.get("code_form"))
+    code_shaped = code_structural or bool(fs.get("code_like"))
+    cn_prose = shape in ("sentence", "paragraph", "question") and not code_structural
+    cn_sentence = shape in ("sentence", "paragraph") and not code_structural
 
     stripped = CITATION_REF_RE.sub(" ", text) if cn_dominant else text
-    code_block = bool(fs.get("code_block"))
-    strong_sym_nocite = bool(CODE_SIGNAL_STRICT_RE.search(stripped))
-    code_like = bool(fs.get("code_like"))
-
-    # 中文自然句让位谓词（旧脚本 _is_cn_sentence）：含汉字 + 自然语言信号，
-    # 且没有真实代码痕迹，才能让代码类规则让位。
-    cn_sentence = False
-    if cn > 0 and cn_nl_route and not code_block:
-        if strong_sym_nocite:
-            cn_sentence = cn >= en
-        elif re.search(r"[A-Za-z_]\w*\s*\(", stripped):
-            cn_sentence = False
-        elif any(token in stripped for token in ("::", "->", "=>", "//")):
-            cn_sentence = False
-        else:
-            cn_sentence = True
-
     return {
         "text": text,
-        "letters": letters, "cn_count": cn, "en_count": en,
-        "has_cn": cn > 0, "has_en": en > 0,
+        "shape": shape,
+        "letters": int(fs.get("letters") or 0),
+        "cn_count": int(fs.get("cn_count") or 0),
+        "en_count": int(fs.get("en_count") or 0),
+        "has_cn": bool(fs.get("has_cn")),
+        "has_en": bool(fs.get("has_en")),
         "word_count": int(fs.get("word_count") or 0),
         "is_multiline": bool(fs.get("is_multiline")),
-        "cn_question": cn_question,
-        "cn_sent_route": cn_sent_route,
-        "cn_para_route": cn_para_route,
-        "cn_punct_count": punct_count,
+        "cn_question": bool(fs.get("cn_question")),
         "cn_dominant": cn_dominant,
+        "cn_prose": cn_prose,
         "cn_sentence": cn_sentence,
-        "strong_sym_nocite": strong_sym_nocite,
+        "strong_sym_nocite": bool(CODE_SIGNAL_STRICT_RE.search(stripped)),
         "multiline_code_sym_nocite": bool(MULTILINE_CODE_SYM_RE.search(stripped)),
-        "code_block": code_block,
-        "code_like": code_like,
-        "code_signal": bool(fs.get("code_signal")),
+        "code_block": bool(fs.get("code_block")),
+        "code_shaped": code_shaped,
+        "code_form": bool(fs.get("code_form")),
+        "code_like": bool(fs.get("code_like")),
         "latex_signal": bool(fs.get("latex_signal")),
+        "latex_leading": bool(fs.get("latex_leading")),
+        "latex_strong": bool(fs.get("latex_strong")),
         "chem_signal": bool(fs.get("chem_signal")),
         "filename": bool(fs.get("filename")),
+        "path_like": bool(fs.get("path_like")),
         "is_word": bool(fs.get("is_word")),
         "is_phrase": bool(fs.get("is_phrase")),
+        "fake_word": bool(fs.get("fake_word")),
         "en_sentence": bool(fs.get("en_sentence")),
         "is_cli": bool(fs.get("is_cli")),
-        "has_cn_clause_punct": bool(CN_CLAUSE_PUNCT_RE.search(text)),
-        "term_max": term_max, "sent_max": sent_max, "code_max": code_max,
+        "code_max": int(thresholds.get("code_max", 80)),
     }
-
-
-def _decide_chinese(f: dict[str, Any]) -> str:
-    """中文四段派发：疑问 → 段落 → 句解 → 词语（对齐 _decide_chinese）。"""
-    if f["cn_question"]:
-        return "chinese_question"
-    if f["cn_para_route"]:
-        return "chinese_paragraph"
-    # 相对旧脚本的放宽 1：旧脚本只在 >120 字时才升格段落（为省 token），
-    # 两句短文本仍算句解。0.2 不再静默限长，按「多句 = 段落」这一最可能
-    # 类别判定，更贴合用户所说的「根据内容特征判定最可能的类别」。
-    if f["cn_punct_count"] >= 2 and f["letters"] > f["term_max"]:
-        return "chinese_paragraph"
-    if f["cn_sent_route"]:
-        return "chinese_sentence"
-    # 放宽 2：无句末标点的半截划选，只要含中文分句标点且长于术语上限，
-    # 判句解而不是「中文词语」。
-    if f["has_cn_clause_punct"] and f["letters"] > f["term_max"]:
-        return "chinese_sentence"
-    return "chinese"
 
 
 # (规则名, requires, ((否决名, veto 谓词), ...), 类别 id 或 None=动态派发)
@@ -159,30 +129,49 @@ Rule = tuple[str, Callable[[dict], bool],
             tuple[tuple[str, Callable[[dict], bool]], ...],
             str | None]
 
+# 排序 = 证据强度：结构符号 > 行结构 > 命令行 > 词形 > 字符集。
+# 「字符集」是最弱的证据，所以 chinese 排在所有结构类规则之后，
+# 并显式声明三个 veto，避免任何带中文注释的代码被吸进中文模板。
 CATEGORY_RULES: tuple[Rule, ...] = (
     ("latex", lambda f: f["latex_signal"],
-     (("chinese_dominant", lambda f: f["cn_dominant"]),), "latex"),
+     (("cn_prose", lambda f: f["cn_prose"]),
+      # 代码块里的 `=`/`_`/`{}` 不是公式；只有「以公式开头」的粘贴才让
+      # 代码形态让位（`\begin{align}`、`$$…` 或 `\frac…` 起头）。
+      ("code_form", lambda f: f["code_form"] and not f["latex_leading"])),
+     "latex"),
     ("chem", lambda f: f["chem_signal"] and not f["has_cn"],
      (), "chem_substance"),
+    # 结构性证据先于长度证据：多行代码块直接判代码，长度只用于兜住
+    # 「没有结构但很长、且带代码符号」的粘贴。
+    ("code_block", lambda f: f["code_block"],
+     (("cn_sentence", lambda f: f["cn_sentence"]),), "code"),
+    ("multiline_code_symbol",
+     lambda f: f["is_multiline"] and f["multiline_code_sym_nocite"],
+     (("cn_sentence", lambda f: f["cn_sentence"]),), "code"),
     ("long_text_code", lambda f: f["letters"] > f["code_max"],
      (("no_code_signal", lambda f: not (f["code_block"]
                                         or f["multiline_code_sym_nocite"]
                                         or f["strong_sym_nocite"])),
       ("cn_sentence", lambda f: f["cn_sentence"])), "code"),
-    ("code_block", lambda f: f["code_block"], (), "code"),
-    ("multiline_code_symbol",
-     lambda f: f["is_multiline"] and f["multiline_code_sym_nocite"],
-     (("cn_sentence", lambda f: f["cn_sentence"]),), "code"),
-    ("filename", lambda f: f["filename"],
-     (("cn_sentence", lambda f: f["cn_sentence"]),), "general"),
-    ("english_word", lambda f: f["is_word"], (), "en_word"),
-    ("chinese", lambda f: f["has_cn"], (), None),
-    ("code_like", lambda f: f["code_like"], (), "code"),
     ("cli_command", lambda f: f["is_cli"],
-     (("english_sentence", lambda f: f["en_sentence"]),), "general"),
+     (("english_sentence", lambda f: f["en_sentence"]),
+      # 「git 怎么用？」是中文提问，不是命令块
+      ("cn_prose", lambda f: f["cn_prose"])), "general"),
+    ("code_like", lambda f: f["code_like"],
+     (("path", lambda f: f["path_like"]),
+      # 中文自然句里夹一段代码/调用，仍然是句解或答疑
+      ("cn_prose", lambda f: f["cn_prose"])), "code"),
+    ("english_word", lambda f: f["is_word"],
+     (("fake_word", lambda f: f["fake_word"]),), "en_word"),
     # 0.2 不再拦截英文整句（ADR-4），归到通用解析而不是 BLOCK
     ("english_sentence", lambda f: f["en_sentence"], (), "general"),
     ("english_phrase", lambda f: f["is_phrase"], (), "en_phrase"),
+    ("chinese", lambda f: f["has_cn"],
+     # 代码/公式只在「中文不是自然句」时抢走中文：句子里夹一个
+     # `f(x) = x^2` 或 `arr.map(x => x*2)` 仍然是中文句解/答疑。
+     (("code", lambda f: (f["code_like"] or f["code_block"] or f["is_cli"])
+       and not f["cn_prose"]),
+      ("formula", lambda f: f["latex_signal"] and not f["cn_prose"])), None),
     ("fallback", lambda f: True, (), "general"),
 )
 
@@ -222,15 +211,25 @@ def classify_text(text: str, settings, *, source: str = "manual",
     known = {c.id for c in categories if c.enabled}
 
     if not cleaned:
-        return Classification(category="general", label="通用解析",
-                              reason="empty", candidates=(), trace=())
+        # 空输入也走同一套「类别必须存在」降级；无可用类别时返回空 id，
+        # 绝不伪造一个已删除/停用的 general。
+        primary = "general" if "general" in known else next(iter(known), "")
+        return Classification(
+            category=primary,
+            label=_category_label(primary, categories) if primary else "无可用模板",
+            reason="empty", candidates=(), trace=())
 
     fs = extract_features(cleaned, settings.thresholds)
-    f = _context(fs.text, fs, settings.thresholds)
+    f = _context(fs, settings.thresholds)
     trace: list[str] = []
 
-    # 图片/OCR 来源以公式为主（用户：图片大多用于识别公式）
-    if source == "vision" and "latex" in known:
+    # 图片文字（OCR）回流的识别结果以公式为主（用户：截图大多用于识别公式），
+    # 但必须真有公式信号：`known` 只是「已启用的类别」，拿它当判据会把
+    # 截图里的表格文字、菜单文字一起塞进公式模板。代码/中文段落仍不强行变。
+    vision_formula = (source == "vision" and f["latex_signal"]
+                      and "latex" in known
+                      and not f["code_form"] and not f["cn_prose"])
+    if vision_formula:
         if explain:
             trace.append("L3 [vision_source]：图片输入优先公式类别")
         primary, reason = "latex", "vision_source"
@@ -246,7 +245,8 @@ def classify_text(text: str, settings, *, source: str = "manual",
                 if explain:
                     trace.append(f"L3 [{name}]：命中但被 {veto} 否决")
                 continue
-            primary = _decide_chinese(f) if category is None else category
+            primary = CN_SHAPE_CATEGORY.get(f["shape"], "chinese") \
+                if category is None else category
             reason = name
             if explain:
                 trace.append(f"L3 [{name}]：胜出 → {primary}")
@@ -255,8 +255,8 @@ def classify_text(text: str, settings, *, source: str = "manual",
     # 类别可能被删除/停用：降级到仍存在的类别，绝不返回不存在的选项
     if primary not in known:
         if explain:
-            trace.append(f"类别 {primary} 未启用，降级到 general")
-        primary = "general" if "general" in known else next(iter(known), "general")
+            trace.append(f"类别 {primary} 未启用，降级到可用类别")
+        primary = "general" if "general" in known else next(iter(known), "")
 
     return Classification(
         category=primary,
@@ -271,14 +271,14 @@ def explain_text(text: str, settings, *, source: str = "manual") -> str:
     """逐条输出规则命中/否决轨迹，用于诊断「初判不准」。"""
     result = classify_text(text, settings, source=source, explain=True)
     fs = extract_features(text, settings.thresholds)
-    features = _context(fs.text, fs, settings.thresholds)
+    features = _context(fs, settings.thresholds)
     lines = [f"输入：{(text or '')[:60]!r}",
              "L2 特征：" + ", ".join(
                  f"{k}={features[k]!r}" for k in
-                 ("letters", "cn_count", "en_count", "cn_question",
-                  "cn_sent_route", "cn_para_route", "cn_dominant",
-                  "cn_sentence", "latex_signal", "chem_signal", "code_block",
-                  "is_word", "is_phrase", "is_cli")),
+                 ("letters", "cn_count", "en_count", "shape",
+                  "cn_dominant", "cn_sentence", "latex_signal", "chem_signal",
+                  "code_block", "code_shaped", "is_word", "is_phrase",
+                  "is_cli", "path_like")),
              *result.trace,
              f"判定类别：{result.category}（{result.label}），规则 {result.reason}",
              "其他可选类别：" + "、".join(c.label for c in result.candidates[:8])]

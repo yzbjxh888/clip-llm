@@ -13,6 +13,22 @@ def make_menu(text, settings, prefs=None):
     return s, build_menu(s, settings, prefs or Preferences())
 
 
+class TestDefaultIntent(unittest.TestCase):
+    """推荐区非空就必须有默认项，否则回车 / 数字键没有落点。"""
+
+    def test_default_never_missing(self):
+        settings = load_defaults()
+        for text in ("serendipity", "熵", "这是什么意思？",
+                     "https://arxiv.org/abs/2411.01234 这篇讲什么",
+                     "第一行没有句号\n第二行也没有"):
+            with self.subTest(text=text):
+                _, menu = make_menu(text, settings)
+                self.assertTrue(menu.recommended, text)
+                self.assertIsNotNone(menu.default_intent, text)
+                self.assertIn(menu.default_intent,
+                              [o.intent.id for o in menu.recommended])
+
+
 class TestDomainResolver(unittest.TestCase):
     def setUp(self):
         self.settings = load_defaults()
@@ -51,7 +67,10 @@ class TestMenuBuilder(unittest.TestCase):
     def test_recommended_and_other_sections(self):
         _, menu = make_menu("NaCl", self.settings)
         self.assertTrue(menu.recommended)
-        self.assertLessEqual(len(menu.recommended), 12)
+        self.assertEqual(len(menu.recommended),
+                         sum(1 for i in self.settings.intents
+                             if i.enabled and i.primary_route == "chem_substance"
+                             and not i.free_input_only))
         self.assertGreaterEqual(len(menu.recommended), 4)   # 领域专属选项充足
         ids = {o.intent.id for o in menu.recommended}
         self.assertIn("chem.legacy", ids)
@@ -101,13 +120,14 @@ class TestMenuBuilder(unittest.TestCase):
         self.assertTrue(menu.free_input["style_refs"])
 
     def test_image_menu_uses_image_intents(self):
+        """截图后图片模板就是「查询方式」（推荐区），其他角度仍是通用视角。"""
         from clipllm02 import AssetRef, InputEnvelope, build_menu, preflight, suggest
         asset = AssetRef("a" * 16, "image/png", "a" * 16, "memory://a")
         env = InputEnvelope.for_image(asset)
         s = suggest(env, preflight(env, self.settings), self.settings)
         menu = build_menu(s, self.settings)
         ids = {o.intent.id for o in menu.recommended}
-        self.assertTrue(ids.intersection({"image.ocr", "image.formula", "image.explain"}))
+        self.assertTrue(ids.intersection({"image.ocr", "image.explain"}))
         self.assertIn("annotate", menu.formats)
 
     def test_menu_has_no_model_calls(self):

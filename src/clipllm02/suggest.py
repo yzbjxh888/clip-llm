@@ -6,11 +6,14 @@
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .classify import available_categories, classify_text
 from .features import evaluate_condition, extract_features
 from .models import (
-    Category, DomainCandidate, FeatureSet, InputEnvelope, IntentOption,
-    MenuModel, MenuOption, PolicyResult, Preferences, Suggestion, sha256_text,
+    Category, Classification, DomainCandidate, FeatureSet, InputEnvelope,
+    IntentOption, MenuModel, MenuOption, PolicyResult, Preferences, Suggestion,
+    sha256_text,
 )
 
 
@@ -54,11 +57,57 @@ def _pick_intent(settings, fs: FeatureSet, routes: tuple[str, ...]) -> str | Non
     return None
 
 
+def modality_ok(intent, modality: str) -> bool:
+    """该方式能否处理这种输入；双模态时文本方式仍可用（处理文字部分）。"""
+    if intent.supports_modality(modality):
+        return True
+    return modality == "mixed" and intent.supports_modality("text")
+
+
+def vision_category(settings) -> str:
+    """图片类别的 id：图片侧只有一条模板，类别即模板 id（图片识别）。"""
+    for route_id, pack in (getattr(settings, "routes", None) or {}).items():
+        if isinstance(pack, dict) and pack.get("vision"):
+            return str(route_id)
+    return "image"
+
+
+def auto_followup_intent(menu, settings) -> str | None:
+    """图片识别结果回流后自动续跑用的查询方式。
+
+    取初判的默认项；若默认项仍是图片方式（例如双模态没判出文本类别），
+    返回 None，让调用方退回手动选择，避免又发一次视觉请求。
+    """
+    if menu is None or not menu.default_intent:
+        return None
+    intent = settings.intent(menu.default_intent)
+    if intent is None or "image" in intent.domains:
+        return None
+    return intent.id
+
+
+def vision_default_intent(settings) -> str | None:
+    """设置里选定的「图片默认查询方式」；配置失效时退到第一条可用图片方式。"""
+    want = str(settings.get("desktop_vision_intent", "image.ocr")
+               or "image.ocr")
+    picked = settings.intent(want)
+    if picked is not None and picked.enabled and "image" in picked.domains:
+        return picked.id
+    for intent in sorted(settings.intents, key=lambda i: i.order):
+        if intent.enabled and "image" in intent.domains:
+            return intent.id
+    return None
+
+
 def classify_intent(envelope: InputEnvelope, fs: FeatureSet,
-                    settings) -> str | None:
-    """按类别初判结果给出该类别下的默认意图；不替用户提交。"""
-    result = classify_text(envelope.text or "", settings,
-                           source=envelope.source)
+                    settings, classification=None) -> str | None:
+    """按类别初判结果给出该类别下的默认意图；不替用户提交。
+
+    ``classification`` 可由调用方传入（``Suggestion.classification``），
+    避免同一份输入被重复判定两次。
+    """
+    result = classification or classify_text(envelope.text or "", settings,
+                                             source=envelope.source)
     return _pick_intent(settings, fs, (result.category, "general"))
 
 
@@ -132,6 +181,39 @@ def suggest(envelope: InputEnvelope, policy: PolicyResult,
     classification = (classify_text(envelope.text or "", settings,
                                     source=envelope.source)
                       if (envelope.text or "").strip() else None)
+
+    if classification is not None and not envelope.assets:
+        # 图片类别只在有图时成立；否则「其他 ▾」里会多出一个点进去全是
+        # 图片方式的类别，选中后必然发不出请求。
+        classification = replace(classification, candidates=tuple(
+            c for c in classification.candidates
+            if c.id != vision_category(settings)))
+
+    if envelope.assets:
+        # 截图/图片输入：类别就是「图片识别」本身（模板 = 图片路由）。
+        # 文本框里的内容只是附加要求，判定出的文本类别降为可切换的候选，
+        # 否则会出现「截了图，标题却写中文词语」。
+        category_id = vision_category(settings)
+        pick = settings.routes.get(category_id) or {}
+        chips: tuple[Category, ...] = ()
+        if classification is not None:
+            chips = (
+                Category(id=classification.category, label=classification.label,
+                         evidence=(f"初判规则：{classification.reason}",)),
+                *tuple(c for c in classification.candidates
+                       if c.id != classification.category))
+        classification = Classification(
+            category=category_id,
+            label=str(pick.get("label") or category_id),
+            reason="image_asset", candidates=chips)
+
+    suggested = None
+    if classification:
+        suggested = _pick_intent(settings, fs,
+                                 (classification.category, "general"))
+    if envelope.assets:
+        # 默认高亮「设置 → 图片默认查询方式」，用户仍可在类别里换其他方式。
+        suggested = vision_default_intent(settings) or suggested
     return Suggestion(
         envelope_id=envelope.envelope_id,
         modality=envelope.modality,
@@ -140,9 +222,7 @@ def suggest(envelope: InputEnvelope, policy: PolicyResult,
         level=level,
         warnings=warnings,
         suggested_route=hint,
-        suggested_intent=(_pick_intent(settings, fs,
-                                       (classification.category, "general"))
-                          if classification else None),
+        suggested_intent=suggested,
         classification=classification,
     )
 
@@ -186,7 +266,6 @@ def build_menu(suggestion: Suggestion, settings,
     prefs = prefs or Preferences()
     menu = settings.menu
     disabled = disabled_domains(settings)
-    limit = int(menu.get("recommended_limit", 6))
     per_domain = int(menu.get("other_per_domain", 2))
     top_domain = suggestion.top_domain
     text_hash = sha256_text(suggestion.features.text)
@@ -263,6 +342,8 @@ def build_menu(suggestion: Suggestion, settings,
             if intent.domains and "*" not in intent.domains \
                     and all(d in disabled for d in intent.domains):
                 continue
+            if not modality_ok(intent, suggestion.modality):
+                continue        # 文本输入里不列图片方式（反之亦然）
             # 查询方式挂在模板下，不再按领域二次过滤：
             # 设置里该模板有几条，UI 就显示几条。
             if not loose:
@@ -271,12 +352,21 @@ def build_menu(suggestion: Suggestion, settings,
                     continue
             out.append(MenuOption(intent=intent))
         out.sort(key=sort_key)
+        if rid == vision_category(settings):
+            # 设置里的「图片默认排最前」仍然生效
+            default_intent = vision_default_intent(settings)
+            out.sort(key=lambda o: (0 if o.intent.id == default_intent else 1,
+                                    sort_key(o)))
         return out
 
     def build_recommended() -> list[MenuOption]:
         """常用查询方式 = 该模板下的全部查询方式，数量与设置一一对应。"""
         if category:
             picked = category_pick(category, loose=bool(category_id))
+            # 类别由分类器决定时，该类别下的查询方式不应再被 applicable
+            # 二次否决：否则标题写「中文句解」，推荐区却退回通用解析。
+            if not picked and not category_id:
+                picked = category_pick(category, loose=True)
         else:
             picked = sorted([o for o in specific
                              if top_domain in o.intent.domains], key=sort_key)
@@ -284,7 +374,7 @@ def build_menu(suggestion: Suggestion, settings,
             picked = sorted(fallback, key=sort_key)
         # 首位固定为「复用主路由模板」的那条（sort_key 已把它排在第一），
         # 其余严格按设置里的顺序；不再让推荐意图插队。
-        return picked[:max(limit, len(picked))]
+        return picked
 
     rec_ids: set[str] = set()
 
@@ -364,6 +454,10 @@ def build_menu(suggestion: Suggestion, settings,
         default_intent = recommended[0].intent.id
     elif policy_name == "auto" and auto and auto in usable_ids:
         default_intent = auto
+    # 兜底：推荐区有可选项就必须有默认项（回车 / 数字键才有落点）。
+    # 类别由分类器判出、但 applicable 与类别形状不一致时，auto 会是 None。
+    if default_intent is None and recommended:
+        default_intent = recommended[0].intent.id
 
     all_options = tuple(recommended) + tuple(others)
     return MenuModel(

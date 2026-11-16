@@ -17,9 +17,7 @@ from clipllm02 import InputEnvelope, build_menu, load_defaults, preflight, sugge
 from clipllm02.desktop.window_base import ResizableWindow  # noqa: E402
 from clipllm02.studio import __main__ as studio_main  # noqa: E402
 from clipllm02.studio.app import StudioApp  # noqa: E402
-from clipllm02.studio.config import (  # noqa: E402
-    DEFAULT_HOTKEYS, HOTKEY_LABELS, load_config,
-)
+from clipllm02.studio.config import DEFAULT_HOTKEYS, HOTKEY_LABELS  # noqa: E402
 from clipllm02.studio.input_bridge import InputBridge  # noqa: E402
 from clipllm02.studio.input_host import _clear_isolation  # noqa: E402
 from clipllm02.studio.main_window import MainWindow  # noqa: E402
@@ -36,7 +34,7 @@ def setUpModule():
 
 
 def context(text="NaCl"):
-    settings = load_config()
+    settings = load_defaults()
     env = InputEnvelope.for_text(text, source="test")
     policy = preflight(env, settings)
     s = suggest(env, policy, settings)
@@ -45,14 +43,14 @@ def context(text="NaCl"):
 
 class Issue1Escape(unittest.TestCase):
     def setUp(self):
-        self.settings = load_config()
+        self.settings = load_defaults()
         self.window = MainWindow(self.settings)
 
     def test_escape_is_bound_and_configurable(self):
         sequences = [str(s.key().toString()) for s in self.window._shortcuts]
         self.assertIn("Esc", sequences)   # QKeySequence 归一化
         self.assertIn(self.window.hotkeys()["dismiss"], ("Escape", "Esc"))
-        changed = load_config()
+        changed = load_defaults()
         changed.data["hotkeys"]["dismiss"] = "Ctrl+Q"
         self.window.set_settings(changed)
         sequences = [str(s.key().toString()) for s in self.window._shortcuts]
@@ -172,7 +170,7 @@ class Issue2TextInputIsolation(unittest.TestCase):
         bridge.shutdown()
 
     def test_settings_opens_in_child_process(self):
-        app = StudioApp(load_config(), poll_interval=5.0)
+        app = StudioApp(load_defaults(), poll_interval=5.0)
         with patch.object(app.input_bridge, "request_settings") as request:
             app.open_settings()
             self.assertEqual(request.call_count, 1)
@@ -188,13 +186,13 @@ class Issue3And4Hotkeys(unittest.TestCase):
         self.assertEqual(DEFAULT_HOTKEYS["dismiss"], "Escape")
 
     def test_settings_has_hotkey_tab(self):
-        dialog = SettingsDialog(load_config())
+        dialog = SettingsDialog(load_defaults())
         self.assertEqual(len(dialog.hotkey_edits), len(DEFAULT_HOTKEYS))
         self.assertIn("vision", dialog.hotkey_edits)
         dialog.close()
 
     def test_conflicting_hotkeys_are_rejected(self):
-        dialog = SettingsDialog(load_config())
+        dialog = SettingsDialog(load_defaults())
         from PySide6.QtGui import QKeySequence
         dialog.hotkey_edits["vision"].setKeySequence(QKeySequence("Ctrl+T"))
         with patch("clipllm02.studio.settings_dialog.save_config"):
@@ -202,7 +200,7 @@ class Issue3And4Hotkeys(unittest.TestCase):
         dialog.close()
 
     def test_hotkey_changes_are_saved(self):
-        dialog = SettingsDialog(load_config())
+        dialog = SettingsDialog(load_defaults())
         from PySide6.QtGui import QKeySequence
         dialog.hotkey_edits["vision"].setKeySequence(QKeySequence("Ctrl+Alt+V"))
         with patch("clipllm02.studio.settings_dialog.save_config") as save:
@@ -211,7 +209,7 @@ class Issue3And4Hotkeys(unittest.TestCase):
         dialog.close()
 
     def test_ipc_triggers_vision(self):
-        app = StudioApp(load_config(), poll_interval=5.0)
+        app = StudioApp(load_defaults(), poll_interval=5.0)
         (app.ipc_dir).mkdir(parents=True, exist_ok=True)
         cmd = app.ipc_dir / "vision.cmd"
         cmd.write_text("vision", encoding="utf-8")
@@ -223,7 +221,7 @@ class Issue3And4Hotkeys(unittest.TestCase):
         app.clip_worker._active = False
 
     def test_vision_shortcut_bound(self):
-        window = MainWindow(load_config())
+        window = MainWindow(load_defaults())
         sequences = [str(s.key().toString()) for s in window._shortcuts]
         self.assertIn("Ctrl+Alt+S", sequences)
 
@@ -254,7 +252,7 @@ class Issue5MoreIntents(unittest.TestCase):
         self.assertNotIn("通用解释", labels)
 
     def test_legacy_template_intents_exist(self):
-        settings = load_config()          # 旧脚本 9 套模板在这里注入
+        settings = load_defaults()          # 旧脚本 9 套模板在这里注入
         raw = settings.data["intents"]
         legacy = [i for i in raw if i.get("use_legacy_template")]
         self.assertGreaterEqual(len(legacy), 6)
@@ -265,26 +263,29 @@ class Issue5MoreIntents(unittest.TestCase):
         self.assertGreater(len(prompt), 1000)
 
     def test_settings_intent_library(self):
-        dialog = SettingsDialog(load_config())
+        dialog = SettingsDialog(load_defaults())
         self.assertGreaterEqual(dialog.intent_total, 40)
         before = dialog.intent_total
+        # 用户自己的配置里可能已有自定义条目，这里只比较增量
+        before_custom = len([i for i in dialog.data["intents"]
+                             if i.get("custom")])
         dialog._add_intent()
         self.assertEqual(dialog.intent_total, before + 1)
         custom = [i for i in dialog.data["intents"] if i.get("custom")]
-        self.assertEqual(len(custom), 1)
-        dialog._current_intent_id = custom[0]["id"]
+        self.assertEqual(len(custom), before_custom + 1)
+        dialog._current_intent_id = custom[-1]["id"]
         dialog._delete_intent()
         self.assertEqual(dialog.intent_total, before)
         dialog.close()
 
     def test_domain_tree_groups_intents(self):
-        dialog = SettingsDialog(load_config())
+        dialog = SettingsDialog(load_defaults())
         tops = {dialog.prompt_tree.topLevelItem(i).data(0, Qt.UserRole)[1]
                 for i in range(dialog.prompt_tree.topLevelItemCount())}
         # 第二层按提示词模板分组，顶层数量与模板数量一致
         self.assertIn("chem_substance", tops)
         self.assertIn("en_word", tops)
-        self.assertIn("image_ocr", tops)
+        self.assertIn("image", tops)
         self.assertEqual(len(tops), len(dialog.data["routes"]))
         total = sum(dialog.prompt_tree.topLevelItem(i).childCount()
                     for i in range(dialog.prompt_tree.topLevelItemCount()))
@@ -298,7 +299,7 @@ class Issue5MoreIntents(unittest.TestCase):
         self.assertIn("general:key_points", format_includes(includes))
 
     def test_intent_prompt_editable(self):
-        dialog = SettingsDialog(load_config())
+        dialog = SettingsDialog(load_defaults())
         dialog.select_first_intent()
         dialog.intent_prompt.setPlainText("我自己写的提示词")
         current = dialog._intent_by_id(dialog._current_intent_id)
@@ -308,14 +309,14 @@ class Issue5MoreIntents(unittest.TestCase):
 
 class Issue6WindowResizeAndLayout(unittest.TestCase):
     def test_edge_detection(self):
-        window = MainWindow(load_config())
+        window = MainWindow(load_defaults())
         self.assertEqual(window._edges_at(QPoint(0, 50)), "L")
         self.assertIn("R", window._edges_at(QPoint(window.width() - 1, 50)))
         self.assertIn("T", window._edges_at(QPoint(100, 0)))
         self.assertIn("B", window._edges_at(QPoint(100, window.height() - 1)))
 
     def test_left_drag_keeps_right_fixed(self):
-        window = MainWindow(load_config())
+        window = MainWindow(load_defaults())
         start = window.geometry()
         window.handle_button(QPoint(500, 300), QPoint(0, 300), True, Qt.NoModifier)
         window.handle_move(QPoint(540, 300), QPoint(40, 300), Qt.LeftButton)
@@ -325,7 +326,7 @@ class Issue6WindowResizeAndLayout(unittest.TestCase):
         self.assertLess(after.width(), start.width())
 
     def test_top_drag_keeps_bottom_fixed(self):
-        window = MainWindow(load_config())
+        window = MainWindow(load_defaults())
         start = window.geometry()
         window.handle_button(QPoint(300, 200), QPoint(300, 0), True, Qt.NoModifier)
         window.handle_move(QPoint(300, 230), QPoint(300, 30), Qt.LeftButton)
@@ -344,7 +345,7 @@ class Issue6WindowResizeAndLayout(unittest.TestCase):
 
     def test_layout_has_scroll_and_cards(self):
         _, env, policy, s, menu = context()
-        tab = QueryTab(load_config())
+        tab = QueryTab(load_defaults())
         tab.set_context(env, policy, s, menu)
         from PySide6.QtWidgets import QScrollArea, QFrame
         self.assertTrue(tab.findChildren(QScrollArea))
@@ -360,7 +361,7 @@ class IssueRound3(unittest.TestCase):
     """第三轮反馈：焦点防护、结果页搜索/新标签、小图标布局、自适应、截图。"""
 
     def setUp(self):
-        self.settings = load_config()
+        self.settings = load_defaults()
 
     def _context(self, text="NaCl"):
         env = InputEnvelope.for_text(text, source="test")
@@ -526,7 +527,7 @@ class Issue9SettingsEditing(unittest.TestCase):
     def test_policy_rule_added_in_dialog_takes_effect(self):
         from clipllm02.settings import Settings
         from clipllm02.studio.settings_dialog import SettingsDialog
-        dialog = SettingsDialog(load_config())
+        dialog = SettingsDialog(load_defaults())
         before = set(dialog.data["policy"]["rules"])
         dialog._add_policy_rule()                  # 自动选中新规则
         rid = dialog._current_policy_id
@@ -539,13 +540,13 @@ class Issue9SettingsEditing(unittest.TestCase):
         # UI 编辑的规则直接被引擎执行（无需 GUI、无需重启逻辑验证）
         result = preflight(InputEnvelope.for_text("这是内部资料"),
                            Settings(dialog.data))
-        self.assertEqual(result.level, "WARN")
+        self.assertEqual(result.level, "BLOCK")
         self.assertIn(rid, [h.reason for h in result.hits])
         dialog.close()
 
     def test_delete_policy_rule(self):
         from clipllm02.studio.settings_dialog import SettingsDialog
-        dialog = SettingsDialog(load_config())
+        dialog = SettingsDialog(load_defaults())
         dialog._add_policy_rule()
         rid = dialog._current_policy_id
         dialog._delete_policy_rule()
@@ -554,7 +555,7 @@ class Issue9SettingsEditing(unittest.TestCase):
 
     def test_add_and_delete_route_template(self):
         from clipllm02.studio.settings_dialog import SettingsDialog
-        dialog = SettingsDialog(load_config())
+        dialog = SettingsDialog(load_defaults())
         dialog.data["routes"]["zz_test_route"] = {
             "id": "zz_test_route", "enabled": True, "query_type": "free",
             "kind": "route", "prompt": "", "sections": [], "fields": []}
@@ -581,14 +582,14 @@ class TestLibrarySettings(unittest.TestCase):
 
     def _dialog(self, root):
         from clipllm02.studio.settings_dialog import SettingsDialog
-        dialog = SettingsDialog(load_config())
+        dialog = SettingsDialog(load_defaults())
         dialog.data["desktop_library_dir"] = str(root)
         dialog._reload_library_folders()
         return dialog
 
     def test_library_tab_exists(self):
         from clipllm02.studio.settings_dialog import SettingsDialog
-        dialog = SettingsDialog(load_config())
+        dialog = SettingsDialog(load_defaults())
         titles = [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())]
         self.assertIn("知识库", titles)
         dialog.close()

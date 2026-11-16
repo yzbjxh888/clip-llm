@@ -1,153 +1,169 @@
 {
-  "version": 1,
-  "description": "0.2 出厂拦截策略。level 可为 BLOCK / WARN / CONFIRM / ALLOW；locked 为 true 时设置页不允许下调。",
+  "version": 2,
+  "description": "0.2 出厂硬拦截。两级：BLOCK（不弹窗、不发请求）与 ALLOW（正常弹窗）。规则闭集，每一条都是「这种内容不该弹窗」；勾选启用、取消勾选关闭，locked 为 true 的项不允许关闭。",
   "rules": {
     "empty": {
+      "label": "空输入",
       "level": "BLOCK",
       "locked": true,
       "detector": "text_is_blank",
-      "feature": null,
-      "description": "空输入或纯空白，没有可解释的对象"
+      "description": "没有任何可解释的对象；纯图片不算空输入"
+    },
+    "no_letters": {
+      "label": "没有文字",
+      "level": "BLOCK",
+      "locked": false,
+      "detector": "feature",
+      "feature": "no_letters",
+      "description": "纯数字、纯标点、纯符号或 emoji，没有可查的词"
+    },
+    "single_latin": {
+      "label": "单个英文字母",
+      "level": "BLOCK",
+      "locked": false,
+      "detector": "feature",
+      "feature": "single_latin",
+      "description": "只复制到一个字母（a、x、I）；单个汉字不在此列，查字是真实需求"
     },
     "url": {
-      "level": "WARN",
+      "label": "只是一个网址",
+      "level": "BLOCK",
       "locked": false,
-      "detector": "regex",
+      "detector": "feature",
       "feature": "url",
-      "pattern": "^(?:https?|ftp|file)://\\S+$",
-      "description": "URL 链接；用户可能想总结网页"
-    },
-    "email": {
-      "level": "WARN",
-      "locked": false,
-      "detector": "regex",
-      "feature": "email",
-      "pattern": "^[\\w.+-]+@[\\w-]+(\\.[\\w-]+)+$",
-      "description": "邮箱地址；用户可能想翻译或分析邮件"
-    },
-    "drive": {
-      "level": "WARN",
-      "locked": false,
-      "detector": "regex",
-      "feature": "drive",
-      "pattern": "^[A-Za-z]:[\\\\/]",
-      "description": "Windows 盘符路径"
+      "description": "整段就是一个链接；句子中间夹链接不会命中"
     },
     "path": {
-      "level": "WARN",
+      "label": "只是一个路径",
+      "level": "BLOCK",
       "locked": false,
       "detector": "feature",
       "feature": "path_like",
-      "description": "POSIX 路径或反斜杠路径（含 / 或 \\）"
+      "description": "/usr/bin、C:\\Users\\…；命令里带路径（cd /usr/bin）不会命中"
+    },
+    "email": {
+      "label": "只是一个邮箱",
+      "level": "BLOCK",
+      "locked": false,
+      "detector": "feature",
+      "feature": "email",
+      "description": "整段就是一个邮箱地址"
     },
     "filename": {
-      "level": "WARN",
+      "label": "只是一个文件名",
+      "level": "BLOCK",
       "locked": false,
       "detector": "feature",
       "feature": "filename",
-      "description": "无空格、后缀在词表或 mime 可猜；排除缩写与强代码符号"
+      "description": "config.py 这类无空格、带已知后缀的文件名"
     },
-    "secret": {
-      "level": "CONFIRM",
+    "token_blob": {
+      "label": "像密钥或哈希的长串",
+      "level": "BLOCK",
       "locked": false,
       "detector": "feature",
-      "feature": "secret_hint",
-      "description": "疑似密钥/口令/私钥/验证码；多行代码块豁免",
-      "multiline_code_exempt": true
+      "feature": "token_blob",
+      "description": "单段 32 字符以上且含数字：UUID、JWT、十六进制哈希、base64 密钥"
     },
     "fake_word": {
-      "level": "WARN",
+      "label": "乱码单词",
+      "level": "BLOCK",
       "locked": false,
       "detector": "feature",
       "feature": "fake_word",
-      "description": "重复字符或无元音超长串"
+      "description": "同一字符重复（aaaa）或 13 个以上连续辅音，没有可解释的词义"
     },
-    "word_too_long": {
-      "level": "WARN",
-      "locked": false,
-      "detector": "threshold",
-      "feature": "letters",
-      "threshold": "word_max_len",
-      "applies_when": {"feature": "is_word", "op": "eq", "value": true},
-      "description": "英文单词超过长度上限"
-    },
-    "phrase_too_long": {
-      "level": "WARN",
-      "locked": false,
-      "detector": "threshold",
-      "feature": "word_count",
-      "threshold": "phrase_max_words",
-      "applies_when": {"feature": "is_phrase", "op": "eq", "value": true},
-      "description": "英文短语超过词数上限"
-    },
-    "chinese_too_long": {
-      "level": "WARN",
-      "locked": false,
-      "detector": "threshold",
-      "feature": "letters",
-      "threshold": "cn_pure_max",
-      "applies_when": {"feature": "cn_term_like", "op": "eq", "value": true},
-      "description": "中文术语超过长度上限（句子/段落/疑问各走独立规则）"
-    },
-    "chinese_sentence_too_long": {
-      "level": "WARN",
-      "locked": false,
-      "detector": "threshold",
-      "feature": "letters",
-      "threshold": "cn_sentence_max",
-      "applies_when": {"feature": "cn_sentence_only", "op": "eq", "value": true},
-      "description": "中文语句超过长度上限（提示而非静默拦截，可升格为段落）"
-    },
-    "chinese_question_too_long": {
-      "level": "WARN",
-      "locked": false,
-      "detector": "threshold",
-      "feature": "letters",
-      "threshold": "cn_question_max",
-      "applies_when": {"feature": "cn_question", "op": "eq", "value": true},
-      "description": "中文疑问句超过长度上限"
-    },
-    "chinese_paragraph_too_long": {
-      "level": "WARN",
-      "locked": false,
-      "detector": "threshold",
-      "feature": "letters",
-      "threshold": "cn_paragraph_max",
-      "applies_when": {"feature": "cn_paragraph_only", "op": "eq", "value": true},
-      "description": "中文段落超过长度上限"
-    },
-    "english_sentence": {
-      "level": "ALLOW",
+    "secret": {
+      "label": "疑似密码或密钥",
+      "level": "BLOCK",
       "locked": false,
       "detector": "feature",
-      "feature": "en_sentence",
-      "description": "0.1 的英文整句硬拦截，0.2 默认不拦截（修复 break the ice. 痛点）"
+      "feature": "secret_hint",
+      "description": "password / api_key / 私钥 / otpauth / 验证码；多行代码里的示例写法仍然豁免",
+      "multiline_code_exempt": true
+    },
+    "pem_block": {
+      "label": "私钥文件",
+      "level": "BLOCK",
+      "locked": false,
+      "detector": "feature",
+      "feature": "pem_block",
+      "description": "包含 BEGIN … PRIVATE KEY 的 PEM 私钥块"
     },
     "too_long": {
+      "label": "超过 1000 字符",
       "level": "BLOCK",
       "locked": true,
       "detector": "threshold",
-      "feature": "letters",
-      "threshold": "code_block_max",
-      "description": "绝对长度上限，防止一次剪贴板误操作烧掉 token"
+      "feature": "char_count",
+      "threshold": "text_max_chars",
+      "description": "绝对长度上限，按字符总数计算（含数字、标点、emoji），防止误操作烧掉 token"
+    },
+    "duplicate": {
+      "label": "重复内容",
+      "level": "BLOCK",
+      "locked": false,
+      "detector": "dedup",
+      "description": "短时间内重复复制同一内容：静默跳过，不弹窗也不报错"
     },
     "daily_limit": {
+      "label": "每日请求上限",
       "level": "BLOCK",
       "locked": true,
       "detector": "quota",
-      "description": "每日请求配额耗尽"
-    },
-    "duplicate": {
-      "level": "ALLOW",
-      "locked": false,
-      "detector": "dedup",
-      "description": "重复内容；跳过而不报错"
+      "description": "当日请求数达到 daily_request_limit 后不再弹窗"
     }
   },
+  "notices": {
+    "description": "只作说明、不参与判定：长度与形态提醒不再弹窗，改为初判界面上的一行文字。",
+    "items": [
+      {
+        "id": "word_too_long",
+        "threshold": "word_max_len",
+        "text": "英文单词超过长度上限"
+      },
+      {
+        "id": "phrase_too_long",
+        "threshold": "phrase_max_words",
+        "text": "英文短语超过词数上限"
+      },
+      {
+        "id": "chinese_too_long",
+        "threshold": "cn_pure_max",
+        "text": "中文术语超过长度上限"
+      },
+      {
+        "id": "chinese_sentence_too_long",
+        "threshold": "cn_sentence_max",
+        "text": "中文语句超过长度上限"
+      },
+      {
+        "id": "chinese_question_too_long",
+        "threshold": "cn_question_max",
+        "text": "中文疑问超过长度上限"
+      },
+      {
+        "id": "chinese_paragraph_too_long",
+        "threshold": "cn_paragraph_max",
+        "text": "中文段落超过长度上限"
+      },
+      {
+        "id": "english_sentence",
+        "threshold": null,
+        "text": "英文整句不拦截（0.1 的硬拦截已废弃）"
+      }
+    ]
+  },
   "levels": {
-    "BLOCK": {"popup": false, "request": false, "log": true},
-    "WARN": {"popup": true, "request": true, "log": false, "banner": true},
-    "CONFIRM": {"popup": true, "request": true, "log": false, "confirm": true},
-    "ALLOW": {"popup": true, "request": true, "log": false}
+    "BLOCK": {
+      "popup": false,
+      "request": false,
+      "log": true
+    },
+    "ALLOW": {
+      "popup": true,
+      "request": true,
+      "log": false
+    }
   }
 }

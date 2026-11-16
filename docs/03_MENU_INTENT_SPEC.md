@@ -6,8 +6,8 @@
 > - 推荐区**只放当前领域专属意图**，`"*"` 通用兜底仅在该领域无可用专属意图时出现；
 > - LOW 档**自动出菜单**（通用兜底 + 各领域代表意图 + 领域切换 chip），
 >   不再强制用户先选领域；
-> - 出厂意图共 74 条（每领域 8~10 项，含复用旧脚本模板的条目），
->   见 `spec/builtin_intents.json`；推荐上限 9（前 9 项带数字键）。
+> - 出厂意图共 41 条，见 `spec/builtin_intents.json`；推荐区全量显示
+>   （ADR-7，不截断），数字键只映射前 9 项。
 > - 设置 →「意图库」可开关、改名、改提示词、改顺序、增删自定义意图。
 > 详见 `docs/08_DESKTOP.md` 第 7 节。
 
@@ -28,7 +28,7 @@
 
 | 区 | 数据来源 | 显示规则 |
 |---|---|---|
-| A 推荐 | `INTENTS` 中 `domains` 含 Top1 或 `applicable="*"` 且 `enabled` | `menu.recommended_limit`（≤9），按 `order` + 偏好频次排序 |
+| A 推荐 | 当前类别下全部启用的查询方式 | 按 `order` + 偏好频次排序，全量显示（ADR-7，不截断） |
 | B 其他角度 | 其他 domain 的代表意图（每域 ≤ `other_per_domain`）+ 被禁用项 | 默认折叠；置灰而非隐藏 |
 | C 呈现 | `IntentOption.supported_formats ∩ formats.enabled` | 单选，默认 `default_format` |
 | D 自由输入 | 运行时 | `instruction` / `prompt` 双模式 + 参考风格下拉 |
@@ -46,7 +46,7 @@ def build_menu(s: Suggestion, settings: Settings, prefs: Preferences) -> MenuMod
         [i for i in intents if i.visible_in(domains[0] if domains else None)
          or i.applicable == "*"],
         key=lambda i: (i.order, -prefs.frequency(i.id, domains[0] if domains else None))
-    )[:settings.menu.recommended_limit]
+    )
 
     others = group_by_domain(
         [i for i in intents if i not in recommended],

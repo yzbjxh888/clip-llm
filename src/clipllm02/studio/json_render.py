@@ -56,7 +56,8 @@ FIELD_LABELS = {
     "relations": "关系", "type": "类型", "domain": "领域与定义域",
     "sense_taken": "采用义项", "is_ambiguous": "是否多义",
     "kind": "类别", "related": "关联与辨析", "conditions": "适用条件",
-    "explanation": "解释", "part": "部分", "role": "所在位置",
+    "explanation": "解释", "part": "部分", "role": "作用",
+    "name": "名称",
     "symbol": "符号", "description": "描述", "analysis": "分析",
     "comment": "备注", "counterexample": "反例",
     # 查询方式专用字段（模板之外的侧面）
@@ -131,6 +132,18 @@ _QUOTED_MATH_RE = re.compile(r"`(\$[^`\n]+?)`")
 _BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
 _ITALIC_RE = re.compile(r"(?<!\*)\*([^*]+)\*(?!\*)")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+
+
+def _is_blank(value) -> bool:
+    """模型漏填的字段：空串、空数组、空对象、None、占位符。"""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        text = value.strip()
+        return not text or text in {"—", "-", "无", "N/A", "null", "None"}
+    if isinstance(value, (list, tuple, dict)):
+        return len(value) == 0
+    return False
 
 
 def _label(key: str) -> str:
@@ -424,9 +437,16 @@ def _render_text_block(text: str, theme: dict, font_size: int) -> str:
     return _render_markdown(text, theme, font_size)
 
 
+LATEX_ENV_RE = re.compile(
+    r"\\(?:begin|end)\{(?:cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix"
+    r"|array|aligned|align|gathered|gather|split)\}")
+
+
 def _looks_like_code(text: str) -> bool:
     if _MATH_BLOCK_LINE_RE.match(text.strip()):
         return False          # 独占一行的 \begin{pmatrix}... 是公式，不是代码
+    if LATEX_ENV_RE.search(text):
+        return False          # cases / matrix 等环境一律按公式处理
     # 公式里的 \begin{pmatrix} 不算代码：先剔除所有公式再判断
     if "\\begin{" in _MATH_RE.sub("", text):
         return True
@@ -441,7 +461,12 @@ def _scalar(value, theme: dict, font_size: int) -> str:
         return "是" if value else "否"
     raw = str(value)
     if _looks_like_code(raw):
-        return f"<pre style='background-color:{theme['chip']};'>{html.escape(raw, quote=False)}</pre>"
+        if "\n" in raw:
+            return (f"<pre style='background-color:{theme['chip']};'>"
+                    f"{html.escape(raw, quote=False)}</pre>")
+        # 单行必须能折行：<pre> 在表格单元格里会把表撑得极宽，看起来就是空白
+        return (f"<span style='background-color:{theme['chip']}; "
+                f"font-family:monospace;'>{html.escape(raw, quote=False)}</span>")
     text = latex_to_unicode(raw)
     if "\n" in text:
         return _render_text_block(text, theme, font_size)
@@ -457,6 +482,10 @@ def _table(rows: list[dict], font_size: int, theme: dict) -> str:
         for key in row:
             if key not in keys:
                 keys.append(key)
+    # 整列都空的字段不占表头：模型只填了 name、没填 role 时，
+    # 不该出现一列全是「—」的「作用」
+    keys = [k for k in keys
+            if any(not _is_blank(r.get(k)) for r in rows)]
     if not keys or len(keys) > 8:
         return "".join(
             "<div class='card'>"
@@ -497,16 +526,132 @@ def _render_value(key: str, value, font_size: int, depth: int,
     return _scalar(value, theme, font_size)
 
 
+_DASH_FIELD_RE = re.compile(
+    r"-?\s*(?:•\s*)?(type|summary|explanation|relations|latex"
+    r"|components|key_points|notes)\s*[:：]\s*")
+
+
+def _merge_dash_fields(data, text: str) -> bool:
+    """模型只给了一半 JSON，剩下字段用「- key: value」另写一遍。
+
+    能对上字段名的就并回结构化结果，避免同一段内容既进表格又原文贴一遍。
+    """
+    if not isinstance(data, dict) or not text:
+        return False
+    hits = list(_DASH_FIELD_RE.finditer(text))
+    if not hits:
+        return False
+    changed = False
+    for index, match in enumerate(hits):
+        key = match.group(1)
+        end = hits[index + 1].start() if index + 1 < len(hits) else len(text)
+        raw = text[match.end():end].strip().strip("-—").strip()
+        if not raw:
+            continue
+        if key in ("key_points", "notes", "relations", "latex"):
+            items = [x.strip(" 　-—•*") for x in
+                     re.split(r"\s+-\s+|(?<=。)\s*-\s*", raw)]
+            items = [x for x in items if x]
+            if not data.get(key) and items:
+                data[key] = items
+                changed = True
+        elif not str(data.get(key) or "").strip():
+            data[key] = raw.strip('"“”')
+            changed = True
+    return changed
+
+
+_JSON_ESCAPES = frozenset('"\\/bfnrt')
+
+
+def _repair_json(text: str) -> str:
+    """把「几乎合法」的 JSON 修成合法 JSON。
+
+    主要治两个病，都只在解析已经失败时调用：
+
+    - **非法转义**：公式里 ``\\cap`` / ``\\mathbb`` / ``\\subset`` 被模型写成
+      单个反斜杠（``\\c`` 不是合法 JSON 转义），一处写错整段就解析失败。
+      这里把非法转义补成 ``\\\\``，已合法的转义原样保留，LaTeX 语义不变。
+    - **截断**：返回被 max_tokens 截断时补上未闭合的字符串与括号，尽量救回
+      已经写出来的字段，而不是把整段源码贴给用户。
+    """
+    out: list[str] = []
+    depth: list[str] = []
+    in_str = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            if ch != "\\":
+                if ch == '"':
+                    in_str = False
+                out.append(ch)
+                i += 1
+                continue
+            nxt = text[i + 1] if i + 1 < n else ""
+            if nxt in _JSON_ESCAPES:
+                out.append(ch)
+                out.append(nxt)
+                i += 2
+                continue
+            if nxt == "u" and re.fullmatch(r"[0-9a-fA-F]{4}",
+                                           text[i + 2:i + 6] or ""):
+                out.append(text[i:i + 6])
+                i += 6
+                continue
+            out.append("\\\\")            # 非法转义：补一个反斜杠
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+        elif ch in "{[":
+            depth.append(ch)
+            out.append(ch)
+        elif ch in "}]":
+            if depth:
+                depth.pop()
+            while out and out[-1] in " \t\r\n":
+                out.pop()
+            if out and out[-1] == ",":    # 尾逗号
+                out.pop()
+            out.append(ch)
+        else:
+            out.append(ch)
+        i += 1
+    if in_str:
+        out.append('"')
+    for opener in reversed(depth):
+        out.append("}" if opener == "{" else "]")
+    return "".join(out)
+
+
+def _looks_like_json_tail(text: str) -> bool:
+    """碎片是不是「JSON 的后半截」——是的话说明刚才只抓到一个内层节点。"""
+    head = text.lstrip(" \t\r\n,")
+    return head.startswith(("{", "[", '"')) or "{" in text[:200]
+
+
 def _extract_json(text: str):
-    """从任意返回里找 JSON：完整解析失败时扫描平衡括号，容忍前后解释文字。
+    """从任意返回里找 JSON：完整解析失败时先修，再扫描平衡括号。
 
     返回 ``(data, (prefix, suffix) | None)``；找不到返回 ``(None, None)``。
     """
     cleaned = clean_output(text)
+    if not cleaned:
+        return None, None
     try:
         return json.loads(cleaned), None
     except (ValueError, TypeError):
         pass
+
+    repaired = _repair_json(cleaned)
+    if repaired != cleaned:
+        try:
+            return json.loads(repaired), None
+        except (ValueError, TypeError):
+            pass
+    cleaned = repaired
 
     for opener, closer in (("{", "}"), ("[", "]")):
         start = cleaned.find(opener)
@@ -531,9 +676,15 @@ def _extract_json(text: str):
                 elif ch == closer:
                     depth -= 1
                     if depth == 0:
+                        chunk = cleaned[start:i + 1]
+                        tail = cleaned[i + 1:]
+                        if _looks_like_json_tail(cleaned[:start]):
+                            # 前面还有 JSON，说明这是内层节点（如 structure
+                            # 的第一项），不是答案，别当答案渲染。
+                            break
                         try:
-                            return (json.loads(cleaned[start:i + 1]),
-                                    (cleaned[:start], cleaned[i + 1:]))
+                            return (json.loads(chunk),
+                                    (cleaned[:start], tail))
                         except (ValueError, TypeError):
                             break
             start = cleaned.find(opener, start + 1)
@@ -561,8 +712,8 @@ def _render_data(data, theme: dict, font_size: int, badge: str) -> list[str]:
                 f"background-color:{theme['chip']}; color:{theme['accent']}; "
                 f"padding:2px 8px;'>{html.escape(tag, quote=False)}</span></p>")
         for key, value in data.items():
-            if key in skip:
-                continue
+            if key in skip or _is_blank(value):
+                continue          # 模型没填的字段不该画成一屏空行
             body = _render_value(str(key), value, font_size, 0, theme)
             if key == "title":
                 out.append("<div class='card'>" + body + "</div>")
@@ -589,10 +740,20 @@ def render_json_result(raw_text: str, *, font_size: int = 14,
                 "模型未返回内容</p>")
 
     data, fringes = _extract_json(cleaned)
+    if data is not None and fringes:
+        if _merge_dash_fields(data, " ".join(x for x in fringes if x)):
+            fringes = None      # 已经并进结构化结果，不再重复贴一遍原文
     out = [css]
     if data is not None:
         out.extend(_render_data(data, theme, font_size, badge))
     else:
+        if cleaned.lstrip().startswith(("{", "[")):
+            # 修复也没救回来的 JSON：明确告诉用户这是原文，别让人误当结论
+            out.append(
+                f"<p style='background-color:{theme['warning_container']}; "
+                f"color:{theme['warning_text']}; padding:4px 8px; "
+                f"font-size:{max(9, font_size - 2)}px;'>"
+                "模型返回的内容不是完整 JSON，下面按原文展示。</p>")
         out.append("<h3>解释结果</h3>")
         out.append("<div class='card'>"
                    + _render_markdown(cleaned, theme, font_size) + "</div>")
@@ -602,7 +763,7 @@ def render_json_result(raw_text: str, *, font_size: int = 14,
         visible = [x.strip(" \n```") for x in fringes if x.strip(" \n```")]
         visible = [x for x in visible
                    if '"query_type"' not in x
-                   and not x.lstrip().startswith(("{", "["))]
+                   and not _looks_like_json_tail(x)]
         note = " ".join(visible)
         if note:
             out.append(

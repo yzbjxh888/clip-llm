@@ -75,19 +75,19 @@ class TestPolicy(unittest.TestCase):
         self.assertFalse(result.allowed)
         self.assertIn("empty", result.block_reasons)
 
-    def test_url_is_warn_not_block(self):
+    def test_url_is_blocked(self):
         result = self._check("https://example.com")
-        self.assertEqual(result.level, "WARN")
-        self.assertTrue(result.allowed)
-        self.assertTrue(result.warnings)
+        self.assertEqual(result.level, "BLOCK")
+        self.assertFalse(result.allowed)
+        self.assertIn("url", result.block_reasons)
 
-    def test_filename_is_warn(self):
-        self.assertEqual(self._check("config.py").level, "WARN")
+    def test_filename_is_blocked(self):
+        self.assertEqual(self._check("config.py").level, "BLOCK")
 
-    def test_secret_is_confirm(self):
+    def test_secret_is_blocked(self):
         result = self._check("api_key=abcdef")
-        self.assertEqual(result.level, "CONFIRM")
-        self.assertTrue(result.confirmations)
+        self.assertEqual(result.level, "BLOCK")
+        self.assertIn("secret", result.block_reasons)
 
     def test_english_sentence_not_blocked(self):
         result = self._check("break the ice.")
@@ -99,11 +99,11 @@ class TestPolicy(unittest.TestCase):
         self.assertEqual(result.level, "BLOCK")
         self.assertIn("too_long", result.block_reasons)
 
-    def test_long_word_is_warn_only_when_word(self):
-        self.assertIn("word_too_long",
-                      [h.reason for h in self._check("tetrafluoroethylene").hits])
-        self.assertNotIn("word_too_long",
-                         [h.reason for h in self._check("two words here").hits])
+    def test_long_word_is_not_a_gate(self):
+        """长度提醒不再弹窗：长单词照常进入初判，只受绝对上限约束。"""
+        result = self._check("tetrafluoroethylene")
+        self.assertEqual(result.level, "ALLOW")
+        self.assertFalse(result.hits)
 
     def test_quota_blocks(self):
         result = self._check("NaCl", requests_today=300)

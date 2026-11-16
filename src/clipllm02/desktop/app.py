@@ -79,7 +79,7 @@ class DesktopApp(QObject):
         self._cancel: threading.Event | None = None
         self._seen: dict[str, float] = {}
         self._self_copy: set[str] = set()
-        self._dup_ttl = float(settings.get("desktop_dup_ttl", 300))
+        self._dup_ttl = float(settings.get("desktop_dup_ttl", 1))
         self.intercepts: list[dict] = []
         self.errors: list[str] = []
         self.stats = {"events": 0, "blocked": 0, "menus": 0,

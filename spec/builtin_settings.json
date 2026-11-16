@@ -1,6 +1,5 @@
 {
   "version": 2,
-  "intents_version": 5,
   "description": "0.2 出厂配置。routes 是骨架用的简化 RoutePack：真实 9 套完整提示词由迁移脚本从 0.1 resources/builtin.json 导入，这里只提供可运行的等价结构。",
   "trigger_policy": "menu",
   "disabled_route_action": "hide_from_menu",
@@ -8,7 +7,6 @@
     "enabled": true,
     "show_other_domains": true,
     "show_disabled_items": "grayed",
-    "recommended_limit": 9,
     "other_per_domain": 3,
     "remember_last_intent": true,
     "default_intent_policy": "last_used",
@@ -51,9 +49,11 @@
   },
   "image": {
     "quick_preset_enabled": true,
+    "vision_enabled": true,
     "asset_ttl_days": 7,
     "auto_recognize_in_menu": false,
-    "max_bytes": 8388608
+    "max_bytes": 8388608,
+    "auto_continue": true
   },
   "image_text_conflict": "image_only",
   "modality_window_ms": 300,
@@ -131,7 +131,13 @@
     "code_max": 80,
     "code_block_max": 1000,
     "cn_dominant_min": 6,
-    "cn_max_chars": 600
+    "cn_max_chars": 600,
+    "text_max_chars": 1000,
+    "code_score_min": 0.5,
+    "vowel_ratio_min": 0.15,
+    "consonant_run_max": 4,
+    "line_para_min_lines": 3,
+    "line_para_min_len": 2
   },
   "domains": [
     {
@@ -202,7 +208,6 @@
     },
     {
       "id": "code",
-      "label": "代码块",
       "label": "编程",
       "switch": "code_query",
       "score": 0.88,
@@ -264,12 +269,23 @@
         "mixed"
       ],
       "when": {
-        "feature": "has_cn",
-        "op": "eq",
-        "value": true
+        "all": [
+          {
+            "feature": "has_cn",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "not": {
+              "feature": "code_signal",
+              "op": "eq",
+              "value": true
+            }
+          }
+        ]
       },
       "evidence": [
-        "检测到中文字符"
+        "检测到中文字符且不是代码"
       ]
     },
     {
@@ -506,72 +522,17 @@
       ],
       "label": "化学物质"
     },
-    "image_ocr": {
-      "id": "image_ocr",
+    "image": {
+      "id": "image",
       "enabled": true,
-      "query_type": "image_ocr",
+      "query_type": "image",
       "kind": "intent",
       "vision": true,
-      "prompt": "请识别图片中的文字和数学公式。公式用 LaTeX 表示，行内公式用 $...$ 包裹，独立公式用 $$...$$ 包裹并单独占一行。保留原有阅读顺序，只返回识别结果，不要添加额外解释。",
-      "sections": {
-        "format": "【格式要求】行内与独立公式分别包裹，表格用 Markdown 表格输出。"
-      },
-      "fields": [
-        "title",
-        "text",
-        "latex",
-        "tables",
-        "notes"
-      ],
-      "label": "图片文字"
-    },
-    "image_table": {
-      "id": "image_table",
-      "enabled": true,
-      "query_type": "image_table",
-      "kind": "intent",
-      "vision": true,
-      "prompt": "请提取图片中的表格与数据，还原行列结构与数值。严格按 JSON 输出，不要添加解释。",
+      "prompt": "只输出结果本身，不要描述分析过程。图中出现公式时一律用 LaTeX 表示（反斜杠双写）；辨认不清的内容直接说明，不要编造。",
       "sections": {},
-      "fields": [
-        "title",
-        "headers",
-        "rows",
-        "notes"
-      ],
-      "label": "图片表格"
-    },
-    "image_explain": {
-      "id": "image_explain",
-      "enabled": true,
-      "query_type": "image_explain",
-      "kind": "intent",
-      "vision": true,
-      "prompt": "请理解并解释这张图片的内容。若是机制图、统计图或结构图，说明组成部分、相互关系与它想表达的结论。严格按 JSON 输出。",
-      "sections": {},
-      "fields": [
-        "title",
-        "summary",
-        "components",
-        "relations",
-        "conclusion"
-      ],
-      "label": "图片解释"
-    },
-    "image_annotate": {
-      "id": "image_annotate",
-      "enabled": true,
-      "query_type": "image_annotate",
-      "kind": "intent",
-      "vision": true,
-      "prompt": "请找出图片中的关键内容并返回标注框。严格按 JSON 输出 boxes 数组，每项含 x、y、w、h、label；坐标使用 0 到 1 的归一化值。",
-      "sections": {},
-      "fields": [
-        "title",
-        "boxes",
-        "notes"
-      ],
-      "label": "图片标注"
+      "fields": [],
+      "label": "图片识别"
     }
-  }
+  },
+  "desktop_followup_image": true
 }

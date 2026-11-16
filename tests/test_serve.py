@@ -3,15 +3,18 @@ import json
 import unittest
 from unittest.mock import patch
 
-from clipllm02 import InputEnvelope, build_menu, load_defaults, preflight, suggest
+from clipllm02 import (
+    InputEnvelope, build_menu, load_defaults, load_settings, preflight, suggest,
+)
 from clipllm02.serve import (
     ClipboardReader, ServeStats, iter_stdin, render_menu, serve,
 )
 
 
-def run(lines, **kw):
+def run(lines, settings=None, **kw):
     out: list[str] = []
-    stats = serve(load_defaults(), iter(lines), printer=out.append, **kw)
+    stats = serve(settings or load_defaults(), iter(lines),
+                  printer=out.append, **kw)
     return stats, "\n".join(out)
 
 
@@ -41,11 +44,13 @@ class TestServeLoop(unittest.TestCase):
         self.assertIn("[拦截] BLOCK", out)
         self.assertNotIn("[推荐]", out)
 
-    def test_warn_input_still_shows_menu(self):
-        stats, out = run(["https://example.com", "q"])
+    def test_disabled_gate_rule_shows_menu(self):
+        """取消勾选某条拦截规则后，该类内容恢复弹窗。"""
+        settings = load_settings(
+            {"policy": {"rules": {"url": {"enabled": False}}}})
+        stats, out = run(["https://example.com", "q"], settings=settings)
         self.assertEqual(stats.blocked, 0)
         self.assertEqual(stats.menus, 1)
-        self.assertIn("⚠", out)
 
     def test_duplicate_is_skipped(self):
         stats, out = run(["NaCl", "NaCl", "q"])
@@ -54,7 +59,9 @@ class TestServeLoop(unittest.TestCase):
 
     def test_low_level_still_shows_automatic_menu(self):
         """初判自动完成，LOW 档也直接给菜单，不强制用户先选领域。"""
-        _, out = run(["12345", "q"])
+        settings = load_settings(
+            {"policy": {"rules": {"no_letters": {"enabled": False}}}})
+        _, out = run(["12345", "q"], settings=settings)
         self.assertIn("[初判] LOW", out)
         self.assertIn("[推荐]", out)
         self.assertIn("通用解释", out)

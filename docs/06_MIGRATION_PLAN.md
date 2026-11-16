@@ -127,7 +127,7 @@ URL 从 BLOCK 改 WARN 后立即生效；`break the ice.` 不再被拦死。
 | Policy | 17 条拦截各级别、BLOCK 优先短路、evidence 完整、脱敏记录字段 |
 | Feature | 全部 `FEATURES` 特征值表驱动；中英混排、LaTeX、化学式、代码块 |
 | Domain | HIGH/MID/LOW/MIXED 四档阈值、MIXED 并列、LOW 不硬判 |
-| Menu | 推荐数 ≤9、置灰规则、默认高亮、偏好只影响排序、四档 UI 差异 |
+| Menu | 推荐区全量显示（ADR-7）、置灰规则、默认高亮、偏好只影响排序、四档 UI 差异 |
 | IPC | MenuModel 序列化、UserSelection 回传、子进程崩溃、配置热重载刷新 |
 | Prompt | 组合顺序、环检测、section 缺失降级、预算截断、契约 append-only |
 | Cache | 意图/格式/includes/自定义指令各不串用；错误不缓存；模板变更不失效 |

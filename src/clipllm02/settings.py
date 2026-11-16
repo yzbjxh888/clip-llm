@@ -19,7 +19,7 @@ from .models import IntentOption, SearchProvider, ValidationError
 
 DEFAULT_SPEC_DIR = Path(__file__).resolve().parents[2] / "spec"
 
-LEVELS = {"BLOCK", "WARN", "CONFIRM", "ALLOW"}
+LEVELS = {"BLOCK", "ALLOW"}
 FORMAT_IDS = {"static", "table", "interactive", "annotate"}
 TRIGGER_POLICIES = {"auto", "confirm", "hotkey", "menu"}
 
@@ -162,7 +162,182 @@ def load_settings(override: dict[str, Any] | str | Path | None = None,
         return Settings(base)
     if isinstance(override, (str, Path)):
         override = _read_json(Path(override))
-    return Settings(deep_merge(base, override))
+    merged = migrate_policy(deep_merge(base, override))
+    merged = migrate_intents(merged)
+    merged = migrate_vision_routes(merged, base)
+    merged = migrate_vision_prompts(merged, base)
+    return Settings(merged)
+
+
+# 0.2.7：图片侧只有一条视觉链路，7 条查询方式是过度拆分。公式解释 / 翻译 /
+# 图表趋势并入「理解这张图」，这三条别名意图不再存在。
+DEPRECATED_INTENT_IDS = {"image.formula", "image.translate", "image.chart"}
+
+# 图片侧原先按输出契约拆成 4 条路由（提示词挂在路由上），导致「提示词模板」
+# 里出现 4 个图片条目，「查询方式」按路由分组也碎成 4 组。现合并为一条
+# `image`（图片识别），提示词下放到每条查询方式的 prompt_override：
+# 一条查询方式 = 一条明确的输出契约，模板只留一条兜底。
+OLD_VISION_ROUTES = {
+    "image_ocr": "image.ocr",
+    "image_table": "image.table",
+    "image_explain": "image.explain",
+    "image_annotate": "image.annotate",
+}
+
+# 旧出厂文案：用户没改过就升级成合并后的契约，改过的原样保留。
+# 拆成 4 条路由时 order 只在各自组内有效，合并后必须重排一次才有序。
+VISION_INTENT_ORDER = {"image.ocr": 10, "image.table": 20,
+                       "image.explain": 30, "image.annotate": 40}
+
+OLD_VISION_ROUTE_PROMPTS = {
+    "image_ocr": "请识别图片中的文字和数学公式。公式用 LaTeX 表示，行内公式用 "
+                 "$...$ 包裹，独立公式用 $$...$$ 包裹并单独占一行。保留原有"
+                 "阅读顺序，只返回识别结果，不要添加额外解释。",
+    "image_table": "请提取图片中的表格与数据，还原行列结构与数值。"
+                   "严格按 JSON 输出，不要添加解释。",
+    "image_explain": "请理解并解释这张图片的内容。若是机制图、统计图或结构图，"
+                     "说明组成部分、相互关系与它想表达的结论。严格按 JSON 输出。",
+    "image_annotate": "请找出图片中的关键内容并返回标注框。严格按 JSON 输出 "
+                      "boxes 数组，每项含 x、y、w、h、label；"
+                      "坐标使用 0 到 1 的归一化值。",
+}
+
+
+def migrate_intents(data: dict[str, Any]) -> dict[str, Any]:
+    """去掉已合并的图片意图；幂等，可反复调用。"""
+    intents = data.get("intents")
+    if isinstance(intents, list):
+        data["intents"] = [
+            item for item in intents
+            if not (isinstance(item, dict)
+                    and item.get("id") in DEPRECATED_INTENT_IDS)]
+    return data
+
+
+# 旧版「理解这张图」契约：9 个字段、3 种结构，8B 视觉模型只会填前两个，
+# 其余留空 → 渲染成一屏「—」。只按标记串替换，用户改过的不动。
+VISION_PROMPT_OUTDATED = {
+    "image.explain": ("只输出这些字段（没有内容的字段给空数组或空字符串）",
+                      "只输出有内容的字段；没有内容就省略整个字段"),
+}
+
+
+def migrate_vision_prompts(data: dict[str, Any],
+                           factory: dict[str, Any]) -> dict[str, Any]:
+    intents = data.get("intents")
+    if not isinstance(intents, list):
+        return data
+    defaults = {i.get("id"): i for i in (factory.get("intents") or [])
+                if isinstance(i, dict)}
+    for item in intents:
+        if not isinstance(item, dict):
+            continue
+        markers = VISION_PROMPT_OUTDATED.get(item.get("id")) or ()
+        if not markers:
+            continue
+        old = str(item.get("prompt_override") or "")
+        new = str((defaults.get(item.get("id")) or {})
+                  .get("prompt_override") or "")
+        if new and any(m in old for m in markers):
+            item["prompt_override"] = new
+    return data
+
+
+def migrate_vision_routes(data: dict[str, Any],
+                          factory: dict[str, Any]) -> dict[str, Any]:
+    """把 4 条图片路由 + 路由级提示词迁到「1 条路由 + 每条查询方式自带提示词」。"""
+    routes = data.get("routes")
+    intents = data.get("intents")
+    if not isinstance(routes, dict) or not isinstance(intents, list):
+        return data
+    factory_intents = {i.get("id"): i for i in (factory.get("intents") or [])
+                       if isinstance(i, dict)}
+    for item in intents:
+        old_route = item.get("primary_route")
+        if old_route in OLD_VISION_ROUTES:
+            pack = routes.get(old_route) or {}
+            old_prompt = str(pack.get("prompt") or "").strip()
+            item["primary_route"] = "image"
+            if item.get("id") in VISION_INTENT_ORDER:
+                item["order"] = VISION_INTENT_ORDER[item["id"]]
+            if not str(item.get("prompt_override") or "").strip():
+                unchanged = (old_prompt == str(
+                    OLD_VISION_ROUTE_PROMPTS.get(old_route, "")).strip())
+                factory_default = str(
+                    (factory_intents.get(item.get("id")) or {})
+                    .get("prompt_override") or "").strip()
+                item["prompt_override"] = (factory_default
+                                           if unchanged and factory_default
+                                           else old_prompt)
+        # 图片查询方式的提示词是各自的输出契约，不是旧脚本那 9 套。
+        # 这一步不依赖路由改名：配置存过盘之后仍要能纠正（幂等）。
+        if "image" in (item.get("domains") or ()):
+            # 图片方式的提示词只有图片模板能提供；指到文本模板上会导致
+            # 「点图片方式 → 不当成视觉请求」这种静默失效，这里直接修回来
+            vision_route = next(
+                (rid for rid, pack in routes.items()
+                 if isinstance(pack, dict) and pack.get("vision")), "")
+            current = str(item.get("primary_route") or "")
+            if vision_route and not (routes.get(current) or {}).get("vision"):
+                item["primary_route"] = vision_route
+        if item.get("primary_route") == "image" \
+                or "image" in (item.get("domains") or ()):
+            item["use_legacy_template"] = False
+            if not str(item.get("followup_route") or "").strip():
+                # 「提取图片中的文字」必回流；没有输出契约的图片方式（提示词
+                # 留空，靠模板兜底）产出的也是自由文本，同样回流到文本链路，
+                # 否则只能把一段文字塞进 JSON 渲染器。
+                if item.get("id") == "image.ocr" \
+                        or not str(item.get("prompt_override") or "").strip():
+                    item["followup_route"] = "auto"
+    for old_route in OLD_VISION_ROUTES:
+        routes.pop(old_route, None)
+    route_prompts = data.get("route_prompts")
+    if isinstance(route_prompts, dict):
+        for old_route in OLD_VISION_ROUTES:
+            route_prompts.pop(old_route, None)
+    old_default = data.pop("desktop_vision_route", None)
+    if old_default is not None:
+        data["desktop_vision_intent"] = OLD_VISION_ROUTES.get(
+            str(old_default), "image.ocr")
+    return data
+
+
+# 0.2.7 把四级收敛为两级：旧语义里的 WARN（发但提醒）与 CONFIRM（点两次才发）
+# 在「弹窗词典」下都等于「不该弹」，统一映射为 BLOCK；用户仍可在设置页取消勾选。
+# 已被合并/删除的规则整条丢弃，否则残留的旧级别会触发校验错误、挡住保存。
+LEGACY_LEVELS = {"WARN": "BLOCK", "CONFIRM": "BLOCK"}
+LEGACY_DROPPED_RULES = {
+    "drive",                           # 已并入 path（路径整串匹配）
+    "word_too_long", "phrase_too_long", "chinese_too_long",
+    "chinese_sentence_too_long", "chinese_question_too_long",
+    "chinese_paragraph_too_long",      # 软长度上限不再弹窗
+    "english_sentence",                # 0.1 的硬拦截，0.2 起彻底移除
+}
+
+
+def migrate_policy(data: dict[str, Any]) -> dict[str, Any]:
+    """把旧配置里的拦截规则迁移到两级语义；幂等，可反复调用。"""
+    policy = data.get("policy")
+    if not isinstance(policy, dict):
+        return data
+    rules = policy.get("rules")
+    if isinstance(rules, dict):
+        for rid in list(rules):
+            if rid in LEGACY_DROPPED_RULES:
+                rules.pop(rid, None)
+                continue
+            rule = rules[rid]
+            if not isinstance(rule, dict):
+                continue
+            level = str(rule.get("level", "BLOCK")).upper()
+            level = LEGACY_LEVELS.get(level, level)
+            rule["level"] = level if level in LEVELS else "BLOCK"
+    levels = policy.get("levels")
+    if isinstance(levels, dict):
+        for name in ("WARN", "CONFIRM"):
+            levels.pop(name, None)
+    return data
 
 
 def _condition_features(cond) -> list[str]:
@@ -272,11 +447,6 @@ def validate(settings: Settings, *, defaults: Settings | None = None) -> list[Va
         errors.append(ValidationError("disabled_route_action", "未知禁用行为", "general"))
 
     menu = settings.menu
-    limit = int(menu.get("recommended_limit", 9))
-    if not 1 <= limit <= 12:
-        errors.append(ValidationError("menu.recommended_limit",
-                                      "推荐项必须在 1–12 之间（前 9 项带数字快捷键）",
-                                      "general"))
     if menu.get("show_disabled_items") not in {"grayed", "hidden", "hidden_in_fold"}:
         errors.append(ValidationError("menu.show_disabled_items", "未知显示方式", "general"))
 
@@ -288,6 +458,69 @@ def validate(settings: Settings, *, defaults: Settings | None = None) -> list[Va
 
     if settings.get("image_text_conflict") not in {"image_only", "text_only", "mixed", "ask"}:
         errors.append(ValidationError("image_text_conflict", "未知冲突策略", "image"))
+    # 图片默认查询方式必须存在且确实挂在图片模板下，否则识别会静默回退
+    vision_intent = str(settings.get("desktop_vision_intent", "image.ocr")
+                        or "image.ocr")
+    picked = settings.intent(vision_intent)
+    if picked is None:
+        errors.append(ValidationError(
+            "desktop_vision_intent", f"图片默认查询方式 {vision_intent!r} 不存在",
+            "prompts"))
+    elif "image" not in picked.domains:
+        errors.append(ValidationError(
+            "desktop_vision_intent", f"{vision_intent!r} 不是图片查询方式",
+            "prompts"))
+
+    # 图片方式的提示词来源必须是图片模板，否则点击它不会发起视觉请求
+    intents = [i for i in (settings.data.get("intents") or ())
+               if isinstance(i, dict)]
+    for item in intents:
+        if "image" not in (item.get("domains") or ()):
+            continue
+        rid = str(item.get("primary_route") or "")
+        if not (settings.routes.get(rid) or {}).get("vision"):
+            errors.append(ValidationError(
+                f"intents.{item.get('id')}.primary_route",
+                f"图片方式的提示词来源必须是图片模板（当前是 {rid!r}）",
+                "prompts"))
+
+    # 图片方式与它的模板都没有提示词：请求会落到全局兜底，属于静默降级
+    for item in intents:
+        if "image" not in (item.get("domains") or ()):
+            continue
+        if str(item.get("prompt_override") or "").strip():
+            continue
+        pack = settings.routes.get(str(item.get("primary_route") or "")) or {}
+        if not str(pack.get("prompt") or "").strip():
+            errors.append(ValidationError(
+                f"intents.{item.get('id')}.prompt_override",
+                "该图片方式没有提示词，所属模板也为空（会落到全局兜底）",
+                "prompts"))
+
+    # 图片方式指定了「识别后用哪个模板」时，目标必须真的能承接二次查询
+    intents = [i for i in (settings.data.get("intents") or ())
+               if isinstance(i, dict)]
+    for item in intents:
+        followup = str(item.get("followup_route") or "")
+        if not followup or followup == "auto":
+            continue
+        field = f"intents.{item.get('id')}.followup_route"
+        pack = settings.routes.get(followup)
+        if pack is None:
+            errors.append(ValidationError(
+                field, f"二次查询模板 {followup!r} 不存在", "prompts"))
+        elif pack.get("vision"):
+            errors.append(ValidationError(
+                field, "图片模板不能作为二次查询模板（会再次请求视觉模型）",
+                "prompts"))
+        elif not pack.get("enabled", True):
+            errors.append(ValidationError(
+                field, f"二次查询模板 {followup!r} 已禁用", "prompts"))
+        elif not any(i.get("enabled", True)
+                     and "image" not in (i.get("domains") or ())
+                     and i.get("primary_route") == followup for i in intents):
+            errors.append(ValidationError(
+                field, f"模板 {followup!r} 下没有可用的查询方式", "prompts"))
     if settings.trigger_policy == "menu" and settings.image.get("auto_recognize_in_menu"):
         errors.append(ValidationError("image.auto_recognize_in_menu",
                                       "菜单模式下禁止自动识别剪贴板图片", "image"))
@@ -328,7 +561,9 @@ def structure_signature(settings: Settings) -> str:
     relevant = {
         "trigger_policy": settings.trigger_policy,
         "disabled_route_action": settings.disabled_route_action,
-        "menu": settings.menu,
+        # recommended_limit 已按 ADR-7 废弃，不再影响输出，因此不进缓存签名。
+        "menu": {k: v for k, v in settings.menu.items()
+                 if k != "recommended_limit"},
         "free_input": settings.free_input,
         "feature_switches": settings.feature_switches,
         "detection": settings.detection,

@@ -10,6 +10,7 @@ mkdir -p dist
 OUT="dist/clipllm02-${BUILD}-src.tar.gz"
 
 tar --exclude='.venv' \
+    --exclude='.git' \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='dist' \

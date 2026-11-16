@@ -28,12 +28,6 @@ class TestDefaults(unittest.TestCase):
         self.assertEqual(s.trigger_policy, "menu")
 
 
-class TestValidation(unittest.TestCase):
-    def test_recommended_limit_bounded_by_number_keys(self):
-        errors = validate(load_settings({"menu": {"recommended_limit": 13}}))
-        self.assertTrue(any(e.field == "menu.recommended_limit" for e in errors))
-        self.assertEqual(validate(load_settings({"menu": {"recommended_limit": 12}})), [])
-
     def test_menu_mode_rejects_auto_image_recognize(self):
         errors = validate(load_settings({
             "trigger_policy": "menu",
@@ -101,7 +95,7 @@ class TestStructureSignature(unittest.TestCase):
     def test_policy_change_changes_signature(self):
         a = structure_signature(load_defaults())
         b = structure_signature(load_settings(
-            {"policy": {"rules": {"url": {"level": "BLOCK"}}}}))
+            {"policy": {"rules": {"url": {"enabled": False}}}}))
         self.assertNotEqual(a, b)
 
     def test_route_and_intent_changes_change_signature(self):
@@ -109,7 +103,7 @@ class TestStructureSignature(unittest.TestCase):
         b = structure_signature(load_settings(
             {"routes": {"en_word": {"enabled": False}}}))
         c = structure_signature(load_settings(
-            {"menu": {"recommended_limit": 5}}))
+            {"menu": {"show_disabled_items": "hidden"}}))
         self.assertNotEqual(a, b)
         self.assertNotEqual(a, c)
 

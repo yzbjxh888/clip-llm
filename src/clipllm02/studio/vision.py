@@ -213,6 +213,7 @@ def _capture_with_portal(max_bytes: int) -> tuple[bytes, str] | None:
                     captured["uri"] = str(_unwrap(value))
         except (AttributeError, TypeError, ValueError):
             pass
+        timer.stop()
         loop.quit()
 
     connected = False
@@ -223,24 +224,36 @@ def _capture_with_portal(max_bytes: int) -> tuple[bytes, str] | None:
         connected = False
     if not connected:
         return None
-    loop.exec()
-    uri = captured.get("uri", "")
-    if not uri.startswith("file://"):
-        return None
-    from urllib.parse import unquote, urlparse
-    uri_path = urlparse(uri).path
-    path = unquote(uri_path)
     try:
-        data = Path(path).read_bytes()
-    except OSError:
-        return None
-    if data and validate_image(data, "image/png", max_bytes) is None:
+        # 若响应已在 connect 与 exec 之间落地，就不要依赖 quit 对未运行循环生效。
+        if captured:
+            timer.stop()
+        else:
+            loop.exec()
+        uri = captured.get("uri", "")
+        if not uri.startswith("file://"):
+            return None
+        from urllib.parse import unquote, urlparse
+        uri_path = urlparse(uri).path
+        path = unquote(uri_path)
         try:
-            Path(path).unlink(missing_ok=True)   # portal 临时文件，读后即删
+            data = Path(path).read_bytes()
         except OSError:
+            return None
+        if data and validate_image(data, "image/png", max_bytes) is None:
+            try:
+                Path(path).unlink(missing_ok=True)   # portal 临时文件，读后即删
+            except OSError:
+                pass
+            return data, "image/png"
+        return None
+    finally:
+        timer.stop()
+        try:
+            bus.disconnect(request_path, "org.freedesktop.portal.Request",
+                           "Response", on_response)
+        except (TypeError, RuntimeError):
             pass
-        return data, "image/png"
-    return None
 
 
 def _capture_with_qt(max_bytes: int) -> tuple[bytes, str] | None:
@@ -263,6 +276,95 @@ def _capture_with_qt(max_bytes: int) -> tuple[bytes, str] | None:
     except (ImportError, RuntimeError, ValueError):
         return None
     return None
+
+
+def vision_enabled(settings) -> bool:
+    """图像识别总开关（设置 → 模型）。关闭后截图不弹菜单、不发视觉请求。"""
+    image = getattr(settings, "image", None) or {}
+    return bool(image.get("vision_enabled", True))
+
+
+def vision_route_prompt(settings, route_id: str) -> str:
+    """取某套图片模板的提示词；为空时回退全局兜底提示词。"""
+    pack = (getattr(settings, "routes", None) or {}).get(route_id) or {}
+    prompt = str(pack.get("prompt") or "").strip()
+    if prompt:
+        return prompt
+    return str(settings.get("desktop_vision_prompt", "") or "").strip()
+
+
+# 图片结果的追问 system：中性说明，不带上一轮那次的具体提问。
+# 上一轮的问答由 history 承载；把「用户的要求：…」塞进 system 会让模型把
+# 旧问题当成常驻指令，每次都重复答上一题。
+VISION_FOLLOWUP_SYSTEM = (
+    "你正在就一张图片回答后续问题。图片会随消息附带；"
+    "回答必须基于图中实际内容与上面的对话，不要编造图中不存在的符号或文字。"
+    "用自然语言回答，不要输出 JSON。"
+)
+
+
+def compose_vision_prompt(prompt: str, user_text: str) -> str:
+    """双模态：用户文本作为「附加要求」拼在图片模板之后，不改模板本身。
+
+    明确写出优先级：方式的输出格式（字段清单 / 只返回识别结果）不该压住
+    用户这次真正想问的问题，否则模型会照着格式跑、无视要求。
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return prompt
+    if not str(prompt).strip():
+        return text
+    # 要求放最前：小模型对「开头」和「结尾」最敏感，放末尾会被方式里的
+    # 「只返回识别结果」压住（实测 8B 视觉模型会直接转写图片、无视问题）。
+    # 同时把方式提示词降级为「参考格式」，避免它继续当主指令。
+    return (f"用户的要求：{text}\n\n"
+            "请直接回答上面这个要求，不要只做文字/公式识别，"
+            "也不要只输出字段清单。\n\n"
+            "【参考格式（仅在与上面要求相容时使用）】\n"
+            f"{prompt}")
+
+
+def intent_vision_prompt(settings, route_id: str, intent=None,
+                         user_text: str = "", mode: str = "instruction") -> str:
+    """某条图片查询方式最终发给视觉模型的提示词。
+
+    有三条路径：
+    1. 选了查询方式：``prompt_override`` > 所属模板 prompt > 全局兜底，
+       末尾再拼「用户附加要求」；
+    2. 自由输入（``intent is None``）：用户要求就是主指令，不该被降级成
+       附加要求挂在某段通用提示词后面（否则模型只会照着那段落跑）；
+       ``mode="prompt"`` 时直接把它当提示词用。
+    """
+    text = (user_text or "").strip()
+    if intent is None and text:
+        if mode == "prompt":
+            return text
+        return ("按下面的要求处理这张图片，只输出结果本身，不要描述分析过程。\n"
+                f"要求：{text}\n"
+                "图中出现公式时用 LaTeX 表示（反斜杠双写）；"
+                "辨认不清的内容直接说明，不要编造。")
+    override = str(getattr(intent, "prompt_override", "") or "").strip()
+    return compose_vision_prompt(
+        override or vision_route_prompt(settings, route_id), user_text)
+
+
+def vision_route(settings) -> str:
+    """图片模板 id：图片侧只有一条路由（图片识别）。"""
+    for route_id, pack in (getattr(settings, "routes", None) or {}).items():
+        if isinstance(pack, dict) and pack.get("vision"):
+            return route_id
+    return "image"
+
+
+def vision_prompt(settings) -> tuple[str, str]:
+    """返回 (模板 id, 发给视觉模型的提示词)。
+
+    提示词的唯一权威是**图片路由自己的 prompt**（设置页「提示词模板 → 图片模板」）；
+    只有该模板为空时才回退到 ``desktop_vision_prompt``。0.2.7 之前这里只读
+    全局那一条，导致「图片文字」模板改了也不生效。
+    """
+    route_id = vision_route(settings)
+    return route_id, vision_route_prompt(settings, route_id)
 
 
 def vision_profile(settings) -> dict:

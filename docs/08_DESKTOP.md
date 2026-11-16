@@ -51,7 +51,7 @@ cd clipllm02
 flowchart TB
   subgraph PROCESS["单个前台进程（无 systemd）"]
     TIMER["QTimer 每 1s"] --> READ["ClipboardReader<br/>wl-paste / xclip 只读"]
-    READ --> PRE["Policy Engine<br/>BLOCK/WARN/CONFIRM"]
+    READ --> PRE["Policy Engine<br/>BLOCK/ALLOW"]
     PRE --> SG["本地特征 + 领域四档"]
     SG --> MENU["MenuWindow 意图菜单<br/>五区 / 1-9 / 自由输入"]
     MENU -->|UserSelection| ORCH["DesktopApp<br/>generation / 取消在途"]
@@ -153,8 +153,8 @@ generation 防乱序、拦截零弹窗、任意模型响应渲染。
 ### 附带修复
 
 - **陈旧用户配置**：旧 `settings.json` 里存着 22 条老意图，导致新版菜单不生效。
-  现在用 `intents_version`（当前 3）在启动时只刷新 `intents` 段，
-  用户改过的模型、开关、拦截级别、搜索源全部保留。
+  现在统一用 `config_version`（当前 7）按 id 合并意图，用户改过的提示词、
+  主路由、领域、自定义意图、模型、开关、拦截级别、搜索源全部保留。
 - **Wayland text-input 焦点噪音**：默认保留中文输入法并抑制 Qt 的无害
   `disableSurface` 警告；新增 `--isolate-text-input` 走 0.1 式严格隔离
   （零警告、最流畅，但内联输入框不支持中文输入法）。

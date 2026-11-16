@@ -3,6 +3,8 @@
 覆盖的是异步/跨入口链路，不是纯函数：这些缺陷在旧的 210 个用例里全部漏网。
 """
 import copy
+import hashlib
+import io
 import json
 import os
 import tempfile
@@ -20,9 +22,12 @@ from clipllm02 import (  # noqa: E402
 )
 from clipllm02.classify import classify_text, explain_text  # noqa: E402
 from clipllm02.models import Preferences, sha256_text  # noqa: E402
-from clipllm02.desktop.gateway import GatewayResult  # noqa: E402
+from clipllm02.desktop import gateway as gateway_mod  # noqa: E402
+from clipllm02.desktop.gateway import (  # noqa: E402
+    Gateway, GatewayConfig, GatewayResult,
+)
+from clipllm02.studio import app as studio_app_mod  # noqa: E402
 from clipllm02.studio.app import StudioApp  # noqa: E402
-from clipllm02.studio.config import load_config  # noqa: E402
 from clipllm02.studio.json_render import (  # noqa: E402
     RENDER_SCHEMA, render_json_result,
 )
@@ -37,10 +42,10 @@ def make_app(pinned: bool = True):
     """默认固定窗口模式，锁定已有窗口回归；unpinned 用例显式传 False。"""
     from clipllm02 import load_defaults
 
-    settings = load_config()
+    settings = load_defaults()
     settings.data["desktop_persistent_window"] = pinned
-    # 与用户真实配置解耦：策略级别一律用出厂值，否则 ~/.config 里把
-    # secret 改成 BLOCK 之类会让 CONFIRM / 硬否决用例的语义悄悄漂移。
+    # 与用户真实配置解耦：策略一律用出厂值，否则 ~/.config 里把
+    # url 拦截关掉之类会让硬否决用例的语义悄悄漂移。
     settings.data["policy"] = copy.deepcopy(load_defaults().policy)
     settings.policy = settings.data["policy"]
     # 固定走本地预览路径：不产生任何网络请求、不启请求线程
@@ -170,14 +175,17 @@ class TestHardVeto(unittest.TestCase):
         self.assertIsNotNone(tab.env)
 
     def test_settings_reload_tightens_rule_on_existing_tab(self):
-        """把 url 从 WARN 改成 BLOCK 后，已打开标签也不得发请求。"""
+        """重新勾选 url 拦截后，已打开标签也不得发请求。"""
         app = self.app
+        data = app.settings.as_dict()
+        data["policy"]["rules"]["url"]["enabled"] = False
+        app.reload_settings(data)
         app.process_text("https://example.com", source="test")
         tab = app.window.current_tab()
         gen = tab.request_generation
-        data = app.settings.as_dict()
-        data["policy"]["rules"]["url"]["level"] = "BLOCK"
-        app.reload_settings(data)
+        data2 = app.settings.as_dict()
+        data2["policy"]["rules"]["url"]["enabled"] = True
+        app.reload_settings(data2)
         app.on_intent(tab, dict(SELECTION))
         self.assertEqual(tab.request_generation, gen)
 
@@ -197,10 +205,6 @@ class TestHardVeto(unittest.TestCase):
         data["policy"]["sensitive_patterns"] = [r"INTERNAL-\d+"]
         app.reload_settings(data)
         before = app.state.stats["blocked"]
-        # 自定义敏感正则默认 CONFIRM，但把 levels 配成禁止请求后应硬拦
-        data2 = app.settings.as_dict()
-        data2["policy"]["levels"]["CONFIRM"]["request"] = False
-        app.reload_settings(data2)
         app.process_text("INTERNAL-42", source="test")
         self.assertEqual(app.state.stats["blocked"], before + 1)
 
@@ -213,9 +217,10 @@ class TestPolicySemantics(unittest.TestCase):
         self.assertNotIn("empty", result.block_reasons)
 
     def test_levels_request_false_blocks(self):
+        """levels 行为表仍是权威：即使允许，配成 request:false 也不得发。"""
         settings = load_defaults()
-        settings.data["policy"]["levels"]["WARN"]["request"] = False
-        result = preflight(InputEnvelope.for_text("https://example.com"), settings)
+        settings.data["policy"]["levels"]["ALLOW"]["request"] = False
+        result = preflight(InputEnvelope.for_text("NaCl"), settings)
         self.assertEqual(result.level, "BLOCK")
         self.assertTrue(result.block_reasons)
 
@@ -225,13 +230,14 @@ class TestPolicySemantics(unittest.TestCase):
                            sensitive_patterns=(r"^Na",))
         self.assertIn("secret", [h.reason for h in result.hits])
 
-    def test_default_levels_unchanged(self):
-        """回归护栏：出厂 levels 表不得改变既有 WARN / CONFIRM / ALLOW 语义。"""
+    def test_factory_levels_are_two_state(self):
+        """回归护栏：出厂只有 BLOCK / ALLOW 两级，没有会额外弹窗的中间态。"""
         settings = load_defaults()
+        self.assertEqual(set(settings.policy["levels"]), {"BLOCK", "ALLOW"})
         self.assertEqual(preflight(
-            InputEnvelope.for_text("https://example.com"), settings).level, "WARN")
+            InputEnvelope.for_text("https://example.com"), settings).level, "BLOCK")
         self.assertEqual(preflight(
-            InputEnvelope.for_text("api_key=abcdef"), settings).level, "CONFIRM")
+            InputEnvelope.for_text("api_key=abcdef"), settings).level, "BLOCK")
         self.assertEqual(preflight(
             InputEnvelope.for_text("break the ice."), settings).level, "ALLOW")
 
@@ -272,62 +278,42 @@ class TestSettingsTransaction(unittest.TestCase):
         dialog.close()
 
 
-class TestConfirmGate(unittest.TestCase):
+class TestBlockedContentIsSilent(unittest.TestCase):
+    """两级策略：命中即静默，不弹窗、不请求，也没有二次确认这一步。"""
+
     def setUp(self):
         self.app = make_app()
 
     def tearDown(self):
         stop(self.app)
 
-    def test_first_click_asks_then_second_click_authorizes(self):
-        """CONFIRM 必须真正拦住首次请求，且不新增窗口/控件。"""
+    def test_secret_blocks_before_menu(self):
         app = self.app
         app.process_text("api_key=abcdef", source="test")
         tab = app.window.current_tab()
-        self.assertTrue(tab._intent_options)
-        gen = tab.request_generation
+        self.assertIsNone(tab.env)                 # 没有进入初判层
+        self.assertTrue(tab.invalidated)
+        self.assertFalse(tab._intent_options)
+        self.assertEqual(app.state.stats["requests"], 0)
 
-        tab._submit_intent(0)
-        self.assertIsNotNone(tab.pending_confirmation)
-        self.assertIn("授权", tab.warn.text())
-        self.assertEqual(tab.stack.currentIndex(), 0)     # 留在初判层
-        self.assertEqual(tab.request_generation, gen)     # 零请求
-
-        tab._submit_intent(0)
-        self.assertIsNone(tab.pending_confirmation)
-        self.assertEqual(tab.request_generation, gen + 1)
-
-    def test_different_selection_needs_fresh_confirmation(self):
+    def test_gate_rule_can_be_turned_off_in_settings(self):
         app = self.app
-        app.process_text("api_key=abcdef", source="test")
-        tab = app.window.current_tab()
-        app.on_intent(tab, dict(SELECTION))
-        first = tab.pending_confirmation
-        self.assertIsNotNone(first)
-        app.on_intent(tab, {"intent_id": None, "domain_id": "*",
-                            "format_id": "static",
-                            "custom_instruction": "换个角度解释",
-                            "free_input_mode": "instruction",
-                            "allowed_route_ids": []})
-        self.assertIsNotNone(tab.pending_confirmation)
-        self.assertNotEqual(tab.pending_confirmation, first)
-
-    def test_new_context_clears_pending_confirmation(self):
-        app = self.app
-        app.process_text("api_key=abcdef", source="test")
-        tab = app.window.current_tab()
-        app.on_intent(tab, dict(SELECTION))
-        self.assertIsNotNone(tab.pending_confirmation)
-        app.process_text("NaCl", source="test")
-        self.assertIsNone(tab.pending_confirmation)
+        data = app.settings.as_dict()
+        data["policy"]["rules"]["url"]["enabled"] = False
+        app.reload_settings(data)
+        app.process_text("https://example.com", source="test")
+        self.assertIsNotNone(app.window.current_tab().env)
 
     def test_domain_change_cannot_bypass_tightened_rule(self):
         app = self.app
+        data = app.settings.as_dict()
+        data["policy"]["rules"]["url"]["enabled"] = False
+        app.reload_settings(data)
         app.process_text("https://example.com", source="test")
         tab = app.window.current_tab()
-        data = app.settings.as_dict()
-        data["policy"]["rules"]["url"]["level"] = "BLOCK"
-        app.reload_settings(data)
+        data2 = app.settings.as_dict()
+        data2["policy"]["rules"]["url"]["enabled"] = True
+        app.reload_settings(data2)
         self.assertTrue(tab.invalidated)
         menu = tab.menu
         app.on_domain(tab, "en")
@@ -384,6 +370,32 @@ class TestResultRendering(unittest.TestCase):
         out = render_json_result('{"核心观点":"中文键"}')
         self.assertIn("核心观点", out)
         self.assertIn("中文键", out)
+
+    def test_latex_single_backslash_is_repaired(self):
+        """模型在公式里把 ``\\cap`` 写成单反斜杠时，整段 JSON 不能因此报废。"""
+        raw = ('{"title": "公式",'
+               ' "latex": ["$$SO(n) = O(n) \\cap SL_n(\\mathbb{R})$$"],'
+               ' "structure": ['
+               '{"part": "SO(n)", "role": "左端主体", "note": "特殊正交群"},'
+               '{"part": "SU(n)", "role": "右端主体", "note": "特殊酉群"}]}')
+        out = render_json_result(raw)
+        self.assertIn("特殊正交群", out)
+        self.assertIn("特殊酉群", out)          # 四项都在，不是只渲染第一项
+        self.assertNotIn('"part"', out)        # 不再把源码贴出来
+
+    def test_truncated_json_keeps_written_fields(self):
+        raw = '{"title": "T", "answer": "A", "structure": [{"part": "SO(n)"'
+        out = render_json_result(raw)
+        self.assertIn("<h3>T</h3>", out)
+        self.assertIn("回答", out)
+
+    def test_inner_fragment_is_not_treated_as_answer(self):
+        """只抠到数组里的一项时，不能把它渲染成「部分 / 作用 / 说明」的结论。"""
+        raw = ('{"structure": [{"part": "SO(n)", "note": "甲"},'
+               ' BROKEN {"part": "SU(n)", "note": "乙"}]}')
+        out = render_json_result(raw)
+        self.assertNotIn("部分</b>", out)          # 没把碎片当答案
+        self.assertIn("不是完整 JSON", out)         # 明确告知按原文展示
 
     def test_fenced_and_unclosed_fence_keep_content(self):
         self.assertIn("回答", render_json_result(
@@ -842,7 +854,7 @@ class TestPersistentWindow(unittest.TestCase):
     def test_opt_out_restores_tool_window(self):
         from PySide6.QtCore import Qt
         from clipllm02.studio.main_window import MainWindow
-        settings = load_config()
+        settings = load_defaults()
         settings.data["desktop_persistent_window"] = False
         window = MainWindow(settings)
         try:
@@ -974,10 +986,9 @@ class TestGoldenDictScanPopup(unittest.TestCase):
 
     def test_settings_default_is_pinned_and_can_opt_out(self):
         from PySide6.QtCore import Qt
-        from clipllm02.studio.config import load_config
         from clipllm02.studio.main_window import MainWindow
         from clipllm02.studio.settings_dialog import SettingsDialog
-        settings = load_config()
+        settings = load_defaults()
         # 默认 pinned：常驻、Alt+Tab 可见、点其它窗口只沉底
         self.assertTrue(bool(settings.get("desktop_persistent_window", True)))
         window = MainWindow(settings)
@@ -1211,9 +1222,8 @@ class TestRenderCache(unittest.TestCase):
 
     def test_schema_version_changes_cache_key(self):
         from clipllm02.prompts import compose_prompt
-        from clipllm02.studio.config import load_config
         composed = compose_prompt(
-            load_config().intent("chem.legacy"), load_config())
+            load_defaults().intent("chem.legacy"), load_defaults())
         kwargs = dict(model="m", route_id=composed.query_type, intent_id="i",
                       format_id="static", schema_version=RENDER_SCHEMA,
                       ruleset_version="r", query_hash="q")
@@ -1223,9 +1233,8 @@ class TestRenderCache(unittest.TestCase):
 
     def test_result_view_has_scrollbar(self):
         from PySide6.QtCore import Qt
-        from clipllm02.studio.config import load_config
         from clipllm02.studio.query_tab import QueryTab
-        tab = QueryTab(load_config())
+        tab = QueryTab(load_defaults())
         self.assertEqual(tab.view.verticalScrollBarPolicy(), Qt.ScrollBarAsNeeded)
 
 
@@ -1315,36 +1324,27 @@ class TestChinesePolicySplit(unittest.TestCase):
                 result = preflight(InputEnvelope.for_text(text), self.settings)
                 self.assertNotIn("fake_word", [h.reason for h in result.hits])
 
-    def test_sentence_uses_120_not_20(self):
-        result = preflight(InputEnvelope.for_text("深" * 130 + "。"), self.settings)
-        self.assertTrue(result.allowed)
-        hits = [h.reason for h in result.hits]
-        self.assertIn("chinese_sentence_too_long", hits)
-        self.assertNotIn("chinese_too_long", hits)
-
-    def test_paragraph_uses_600(self):
-        result = preflight(InputEnvelope.for_text(
-            "深" * 300 + "。" + "深" * 301 + "。"), self.settings)
-        self.assertTrue(result.allowed)
-        hits = [h.reason for h in result.hits]
-        self.assertIn("chinese_paragraph_too_long", hits)
-        self.assertNotIn("chinese_too_long", hits)
-
-    def test_term_still_uses_20(self):
-        result = preflight(InputEnvelope.for_text("深" * 25), self.settings)
-        self.assertIn("chinese_too_long", [h.reason for h in result.hits])
-        self.assertNotIn("chinese_sentence_too_long", [h.reason for h in result.hits])
-
-    def test_question_uses_its_own_limit(self):
-        result = preflight(InputEnvelope.for_text("深" * 130 + "？"), self.settings)
-        self.assertIn("chinese_question_too_long", [h.reason for h in result.hits])
-        self.assertNotIn("chinese_too_long", [h.reason for h in result.hits])
+    def test_soft_length_limits_never_block(self):
+        """四类中文长度不再弹窗：只保留 1000 字符绝对上限。"""
+        cases = [
+            ("深" * 130 + "。", "chinese_sentence"),
+            ("深" * 300 + "。" + "深" * 301 + "。", "chinese_paragraph"),
+            ("深" * 25, "chinese"),
+            ("深" * 130 + "？", "chinese_question"),
+        ]
+        for text, category in cases:
+            with self.subTest(category=category):
+                result = preflight(InputEnvelope.for_text(text), self.settings)
+                self.assertTrue(result.allowed)
+                self.assertFalse(result.hits)
+                self.assertEqual(classify_text(text, self.settings).category,
+                                 category)
 
     def test_condition_tree_validation(self):
         from clipllm02.settings import Settings, validate
         data = self.settings.as_dict()
         data["policy"]["rules"]["custom_tree"] = {
-            "level": "WARN", "locked": False, "detector": "regex",
+            "level": "BLOCK", "locked": False, "detector": "regex",
             "pattern": "x",
             "applies_when": {"all": [
                 {"feature": "has_cn", "op": "eq", "value": True},
@@ -1814,6 +1814,542 @@ class TestUiPolish(unittest.TestCase):
                              "英语词条")
         finally:
             dialog.close()
+
+
+class TestRenderSkipsBlankFields(unittest.TestCase):
+    """模型漏填的字段不该画成空行/空列——用户看到的就是一屏「—」。"""
+
+    def test_blank_fields_not_rendered(self):
+        html = render_json_result(
+            '{"type":"机制图","summary":"","relations":[],"notes":[]}')
+        self.assertIn("机制图", html)
+        self.assertNotIn("简要解释", html)
+        self.assertNotIn("关系", html)
+        self.assertNotIn("—", html)
+
+    def test_blank_table_column_dropped(self):
+        html = render_json_result(
+            '{"components":[{"name":"想象界","role":""},'
+            '{"name":"象征界","role":""}]}')
+        self.assertIn("名称", html)
+        self.assertNotIn("作用", html)      # 整列空 → 不出现表头
+        self.assertNotIn("—", html)
+        self.assertEqual(html.count("想象界"), 1)
+
+    def test_dash_list_is_merged_not_duplicated(self):
+        """模型给半个 JSON + 「- 字段: 值」，要合并，不能原文再贴一遍。"""
+        raw = ('{"components":[{"name":"三界圆圈","role":"基本框架"}]}\n'
+               "- type: 机制图 - summary: 该图阐释欲望的形成机制。"
+               ' - key_points: - "想象界"是三界之一 - "焦虑"源于冲突')
+        html = render_json_result(raw, font_size=14, dark=False)
+        self.assertIn("机制图", html)
+        self.assertIn("简要解释", html)       # summary 被补进结构化结果
+        self.assertIn("要点", html)           # key_points 被补进来
+        self.assertNotIn("- type:", html)     # 不再原文重复
+
+    def test_latex_cases_in_table_is_not_pre(self):
+        """表格单元格里的 LaTeX 不能变成 <pre>：不换行会把表格撑到极宽。"""
+        payload = json.dumps({
+            "title": r"$$\gamma_i = \begin{cases}1\end{cases}$$",
+            "structure": [{
+                "part": r"\begin{cases} 1, & i=j, \\ 0, & i\ne j. \end{cases}",
+                "role": "右端"}],
+        })
+        html = render_json_result(payload, font_size=14, dark=False)
+        self.assertNotIn("<pre", html)        # 关键：表格里不能出现不换行的 pre
+        self.assertIn("右端", html)
+
+    def test_labels_are_chinese(self):
+        html = render_json_result(
+            '{"components":[{"name":"想象界","role":"左上"}]}')
+        self.assertIn("名称", html)
+        self.assertIn("作用", html)
+        self.assertNotIn("Name", html)
+
+
+class TestScreenshotTextResidue(unittest.TestCase):
+    """查询框里残留的旧正文不能被当成新截图的「附加要求」。"""
+
+    PNG = b"\x89PNG" + b"0" * 64
+    FORMULA = "$$f_{ij} = \\sum_{k=1}^{n} x_{ik} x_{jk} = \\delta_{ij}$$"
+
+    def setUp(self):
+        self.app = make_app()
+
+    def tearDown(self):
+        stop(self.app)
+
+    def test_text_query_clears_query_box(self):
+        """文本查询已经进了标签页，查询框必须清空。"""
+        self.app.process_text(self.FORMULA, source="clipboard")
+        self.assertEqual(self.app.window.query_edit.text(), "")
+        self.assertEqual(self.app._last_query_text, self.FORMULA)
+
+    def test_residual_text_is_not_attached_to_screenshot(self):
+        self.app.process_text(self.FORMULA, source="clipboard")
+        self.app.window.query_edit.setText(self.FORMULA)      # 模拟残留
+        self.app.clip_monitor.take_image = lambda: None
+        with patch.object(studio_app_mod, "read_clipboard_image",
+                          lambda max_bytes=0: (self.PNG, "image/png")), \
+                patch.object(studio_app_mod, "capture_screenshot",
+                             lambda max_bytes=0: (self.PNG, "image/png")):
+            self.app.on_vision()
+        tab = self.app.window.current_tab()
+        self.assertIsNone(tab.env.text)                       # 没带上旧正文
+        self.assertEqual(tab.env.modality, "image")
+        self.assertEqual(self.app.window.query_edit.text(), "")
+
+
+class TestVisionTicket(unittest.TestCase):
+    """图片请求必须带票据：迟到或换图后的旧结果不能盖掉新结果。"""
+
+    def setUp(self):
+        self.app = make_app()
+        self.tab = self.app.window.current_tab()
+        self.tab.show_loading("x", hint="正在识别图片..")
+
+    def tearDown(self):
+        stop(self.app)
+
+    def _deliver(self, text, generation, envelope_id=""):
+        from clipllm02.studio.vision import VisionResult
+        self.app._on_vision_done((
+            self.tab, VisionResult(text=text, mime="image/png"),
+            "image.explain", "这张图在讲什么", "", "提示词",
+            generation, envelope_id))
+
+    def test_stale_result_is_dropped(self):
+        self.tab.request_generation = 7
+        self._deliver('{"title":"上一张图"}', 6)
+        self.assertNotIn("上一张图", self.tab.view.toPlainText())
+        self._deliver('{"title":"这一张图"}', 7)
+        self.assertIn("这一张图", self.tab.view.toPlainText())
+
+    def test_closed_tab_is_not_touched(self):
+        self.app.window._tabs.remove(self.tab)
+        self._deliver('{"title":"孤儿"}', self.tab.request_generation)
+        self.assertNotIn("孤儿", self.tab.view.toPlainText())
+
+
+class TestImageIdentity(unittest.TestCase):
+    """同一张图换个编码要认得出是同一张，不同图必须区分。"""
+
+    def setUp(self):
+        self.app = make_app()
+
+    def tearDown(self):
+        stop(self.app)
+
+    @staticmethod
+    def _encode(color: str, fmt: str) -> bytes:
+        from PySide6.QtCore import QBuffer
+        from PySide6.QtGui import QColor, QImage
+        image = QImage(40, 40, QImage.Format.Format_RGB32)
+        image.fill(QColor(color))
+        buffer = QBuffer()
+        buffer.open(QBuffer.OpenModeFlag.WriteOnly)
+        image.save(buffer, fmt)
+        return bytes(buffer.data())
+
+    def test_same_pixels_different_encoding(self):
+        png = self._encode("#c96442", "PNG")
+        bmp = self._encode("#c96442", "BMP")
+        self.assertNotEqual(png, bmp)
+        self.assertEqual(self.app._image_identity(png),
+                         self.app._image_identity(bmp))
+
+    def test_different_pixels_differ(self):
+        self.assertNotEqual(self.app._image_identity(self._encode("#c96442", "PNG")),
+                            self.app._image_identity(self._encode("#141413", "PNG")))
+
+
+class TestStaleClipboardImage(unittest.TestCase):
+    """剪贴板里还是上次那张图时必须去截新的，不能把同一张再查一遍。"""
+
+    def setUp(self):
+        self.app = make_app()
+
+    def tearDown(self):
+        stop(self.app)
+
+    def test_same_image_twice_only_first_counts(self):
+        clip = (b"\x89PNG-A", "image/png")
+        other = (b"\x89PNG-B", "image/png")
+        self.assertIsNotNone(self.app._fresh_clipboard_image(clip))
+        self.assertIsNone(self.app._fresh_clipboard_image(clip))   # 旧图
+        self.assertIsNotNone(self.app._fresh_clipboard_image(other))
+        # 用过别的图之后，最早那张也不能被重新当成新图
+        self.assertIsNone(self.app._fresh_clipboard_image(clip))
+
+    def test_none_stays_none(self):
+        self.assertIsNone(self.app._fresh_clipboard_image(None))
+
+
+class TestVisionFollowup(unittest.TestCase):
+    """图片结果的追问要和文本一致：带上上一轮，且不再重新识别图片。"""
+
+    def setUp(self):
+        from clipllm02.modality import MemoryAssetStore
+        self.app = make_app()
+        png = b"\x89PNG" + b"0" * 64
+        self.asset = MemoryAssetStore().put(png, "image/png")
+        self.app._remember_asset(self.asset, png, "image/png")
+        self.app._present_envelope(
+            InputEnvelope.for_image(self.asset, source="屏幕截图"))
+        self.tab = self.app.window.current_tab()
+        self.selection = {"intent_id": "image.explain", "domain_id": "*",
+                          "format_id": "static"}
+        self.tab.last_selection = dict(self.selection)
+        self.tab._pending_content = "[图片] 这张图在讲什么"
+
+    def tearDown(self):
+        stop(self.app)
+
+    def _vision_done(self, text='{"type":"机制图"}'):
+        from types import SimpleNamespace
+        self.app._on_vision_done(
+            (self.tab, SimpleNamespace(ok=True, text=text),
+             "image.explain", "这张图在讲什么", "", "视觉提示词原文"))
+
+    def test_direct_result_records_chat_turn(self):
+        self._vision_done()
+        self.assertEqual(len(self.tab.chat_history), 2)
+        # 追问用的 system 是中性的，不能是上一轮那份带具体提问的提示词
+        self.assertIn("图片", self.tab.chat_system)
+        self.assertNotIn("这张图在讲什么", self.tab.chat_system)
+        self.assertNotIn("视觉提示词原文", self.tab.chat_system)
+
+    def test_followup_uses_history_not_plain_query(self):
+        self._vision_done()
+        self.app.on_intent = lambda _tab, data: None
+        self.app.on_followup(self.tab, "那想象界呢？")
+        pending = self.tab.__dict__.get("_followup") or {}
+        self.assertTrue(pending.get("history"))
+        self.assertIn("追问模式", pending.get("system", ""))
+
+    def test_followup_does_not_rerequest_vision(self):
+        self._vision_done()
+        called = {}
+        self.app._start_vision = lambda *a, **k: called.setdefault("v", True)
+        self.tab._followup = {"question": "那想象界呢？",
+                              "history": list(self.tab.chat_history),
+                              "system": "自由作答 system"}
+        self.app.on_intent(self.tab, dict(self.selection))
+        self.assertNotIn("v", called)
+
+
+class TestFollowupImageAttached(unittest.TestCase):
+    """追问带原图：文本模型能重新看图，不必顺着上一轮答案猜。"""
+
+    def _run(self, image, *, http_400=False):
+        import urllib.error
+        bodies: list[dict] = []
+
+        class _Resp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self):
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(request, timeout=0):
+            bodies.append(json.loads(request.data.decode("utf-8")))
+            if http_400 and len(bodies) == 1:
+                raise urllib.error.HTTPError(request.full_url, 400, "bad",
+                                             {}, io.BytesIO(b""))
+            return _Resp({"choices": [{"message": {"content": "ok"}}]})
+
+        client = Gateway(GatewayConfig(api_url="http://x/v1", api_key="k",
+                                       model="m"))
+        with patch.object(gateway_mod.urllib.request, "urlopen", fake_urlopen):
+            result = client.explain("sys", "哪几个？", image=image)
+        return result, bodies
+
+    def test_image_part_is_attached(self):
+        result, bodies = self._run((b"png-bytes", "image/png"))
+        self.assertTrue(result.ok)
+        content = bodies[0]["messages"][-1]["content"]
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[1]["type"], "image_url")
+        self.assertTrue(content[1]["image_url"]["url"].startswith(
+            "data:image/png;base64,"))
+
+    def test_falls_back_to_text_when_model_rejects_image(self):
+        result, bodies = self._run((b"png-bytes", "image/png"), http_400=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(len(bodies), 2)                       # 重发了一次
+        self.assertIsInstance(bodies[1]["messages"][-1]["content"], str)
+
+
+class TestFollowupImageDecision(unittest.TestCase):
+    """追问带图的判定：有图 + 有追问 + 开关开。"""
+
+    def setUp(self):
+        from clipllm02.modality import MemoryAssetStore
+        self.app = make_app()
+        png = b"\x89PNG" + b"0" * 64
+        self.asset = MemoryAssetStore().put(png, "image/png")
+        self.app._remember_asset(self.asset, png, "image/png")
+        self.env = InputEnvelope.for_image(self.asset, source="屏幕截图")
+        self.followup = {"question": "哪几个？", "history": [], "system": ""}
+
+    def tearDown(self):
+        stop(self.app)
+
+    def test_attaches_image_for_followup(self):
+        self.assertIsNotNone(
+            self.app._attach_image(self.followup, False, self.env))
+
+    def test_attaches_image_for_other_view(self):
+        self.assertIsNotNone(self.app._attach_image(None, True, self.env))
+
+    def test_no_image_for_first_query(self):
+        self.assertIsNone(self.app._attach_image(None, False, self.env))
+
+    def test_switch_off_disables_attachment(self):
+        self.app.settings.data["desktop_followup_image"] = False
+        self.assertIsNone(
+            self.app._attach_image(self.followup, True, self.env))
+
+
+class TestOtherViewOnImage(unittest.TestCase):
+    """「其他视角」在图片下要能用：走文本模型解读，原图附带。"""
+
+    def setUp(self):
+        from clipllm02.modality import MemoryAssetStore
+        self.app = make_app()
+        png = b"\x89PNG" + b"0" * 64
+        asset = MemoryAssetStore().put(png, "image/png")
+        self.app._remember_asset(asset, png, "image/png")
+        self.app._present_envelope(
+            InputEnvelope.for_image(asset, source="屏幕截图"))
+        self.tab = self.app.window.current_tab()
+
+    def tearDown(self):
+        stop(self.app)
+
+    def test_view_runs_text_request_with_seed(self):
+        noticed = []
+        visions = []
+        self.app._notice = lambda title, msg: noticed.append(title)
+        self.app._start_vision = lambda *a, **k: visions.append(True)
+        self.app.on_intent(self.tab, {
+            "domain_id": "*", "intent_id": "view.origin",
+            "format_id": "static", "custom_instruction": None,
+            "allowed_route_ids": ["general"]})
+        self.assertFalse(noticed, noticed)          # 不再提示「请选择图片方式」
+        self.assertFalse(visions)                   # 也不走视觉分支
+        self.assertIn("角度解读这张图片", self.tab._pending_content)
+        self.assertTrue(self.tab._pending_system)
+        self.assertEqual(self.tab.stack.currentIndex(), 1)
+
+
+class TestImageFreeInput(unittest.TestCase):
+    """截图后的「自定义」要和文本侧一样真正生效。"""
+
+    def setUp(self):
+        from clipllm02.modality import MemoryAssetStore
+        self.app = make_app()
+        png = b"\x89PNG" + b"0" * 64
+        self.asset = MemoryAssetStore().put(png, "image/png")
+        self.app._remember_asset(self.asset, png, "image/png")
+
+    def tearDown(self):
+        stop(self.app)
+
+    def _free_selection(self):
+        return {"domain_id": "*", "intent_id": None, "format_id": "static",
+                "custom_instruction": "解释图里这个公式",
+                "free_input_mode": "instruction", "style_ref": None,
+                "allowed_route_ids": []}
+
+    def test_query_box_is_cleared_after_image_capture(self):
+        """查询框里的句子已经进了 env；不留在框里，免得下一张图继承它。"""
+        self.app.window.query_edit.setText("上一轮遗留的问题")
+        self.app._present_envelope(
+            InputEnvelope.for_image(self.asset, source="屏幕截图",
+                                    text="这张图有几个符号"))
+        self.assertEqual(self.app.window.query_edit.text(), "")
+
+    def test_pure_image_free_input_goes_to_vision(self):
+        self.app._present_envelope(
+            InputEnvelope.for_image(self.asset, source="屏幕截图"))
+        tab = self.app.window.current_tab()
+        got: dict = {}
+        self.app._start_vision = (
+            lambda _t, _e, route, extra, intent=None, mode="instruction":
+            got.update(route=route, extra=extra, intent=intent, mode=mode))
+        self.app.on_intent(tab, self._free_selection())
+        self.assertEqual(got.get("extra"), "解释图里这个公式")
+        self.assertIsNone(got.get("intent"))
+
+    def test_query_box_text_becomes_requirement(self):
+        """图 + 查询框一句问题：这句话必须作为「附加要求」发给视觉模型。"""
+        self.app._present_envelope(
+            InputEnvelope.for_image(self.asset, source="屏幕截图",
+                                    text="这张图有几个符号"))
+        tab = self.app.window.current_tab()
+        got: dict = {}
+        self.app._start_vision = (
+            lambda _t, _e, route, extra, intent=None, mode="instruction":
+            got.update(extra=extra, intent=intent))
+        self.app.on_intent(tab, {"domain_id": "*", "intent_id": "image.explain",
+                                 "format_id": "static",
+                                 "custom_instruction": None,
+                                 "allowed_route_ids": ["image"]})
+        self.assertEqual(got.get("extra"), "这张图有几个符号")
+
+    def test_mixed_free_input_also_goes_to_vision(self):
+        """图+文时自定义要求也以图片为主，不能退化成对那段文字的查询。"""
+        self.app._present_envelope(
+            InputEnvelope.for_image(self.asset, source="屏幕截图",
+                                    text="这句是附加的文字"))
+        tab = self.app.window.current_tab()
+        called: dict = {}
+        self.app._start_vision = lambda *a, **k: called.setdefault("v", True)
+        self.app.on_intent(tab, self._free_selection())
+        self.assertTrue(called.get("v"))
+
+
+class TestImageIntentEditor(unittest.TestCase):
+    """查询方式页：图片方式的主路由只能是图片模板，且多一个「识别后」。"""
+
+    def setUp(self):
+        from clipllm02.studio.settings_dialog import SettingsDialog
+        self.dialog = SettingsDialog(load_defaults())
+
+    def tearDown(self):
+        self.dialog.close()
+
+    def _route_options(self):
+        combo = self.dialog.intent_route_combo
+        return [combo.itemData(i) for i in range(combo.count())]
+
+    def test_image_intent_lists_only_vision_template(self):
+        self.dialog._load_intent("image.ocr")
+        self.assertEqual(self._route_options(), ["image"])
+        self.assertFalse(self.dialog.intent_followup_combo.isHidden())
+
+    def test_text_intent_hides_followup_and_vision_template(self):
+        self.dialog._load_intent("zh.legacy")
+        self.assertTrue(self.dialog.intent_followup_combo.isHidden())
+        self.assertNotIn("image", self._route_options())
+
+    def test_followup_choice_round_trips(self):
+        self.dialog._load_intent("image.ocr")
+        combo = self.dialog.intent_followup_combo
+        combo.setCurrentIndex(combo.findData("latex"))
+        raw = next(i for i in self.dialog.data["intents"]
+                   if i["id"] == "image.ocr")
+        self.assertEqual(raw["followup_route"], "latex")
+
+
+class TestVisionAutoContinue(unittest.TestCase):
+    """截图 → 选一次 → 出答案：识别结果要能自动接上文本模板。"""
+
+    def setUp(self):
+        self.app = make_app()
+
+    def tearDown(self):
+        stop(self.app)
+
+    def test_auto_submit_uses_text_intent(self):
+        from types import SimpleNamespace
+        from PySide6.QtWidgets import QLabel
+
+        env = InputEnvelope.for_text(r"\(E = mc^2\)", source="vision")
+        menu = build_menu(suggest(env, preflight(env, self.app.settings),
+                                  self.app.settings), self.app.settings)
+        tab = SimpleNamespace(env=env, menu=menu,
+                              result_label=QLabel(""),
+                              _goto_result=lambda: None)
+        got: dict = {}
+        self.app.on_intent = lambda _tab, data: got.update(data)
+        self.app._auto_submit(tab)
+        self.assertIn("intent_id", got)
+        intent = self.app.settings.intent(got["intent_id"])
+        self.assertNotIn("image", intent.domains)
+        self.assertEqual(intent.primary_route, "latex")
+
+    def test_ocr_flow_lands_on_result_without_second_menu(self):
+        """截图 → 选一次 → 结果：中间那次初判不能真的停下来等用户。"""
+        from types import SimpleNamespace
+        from clipllm02.modality import MemoryAssetStore
+
+        png = b"\x89PNG" + b"0" * 64
+        asset = MemoryAssetStore().put(png, "image/png")
+        self.app._remember_asset(asset, png, "image/png")
+        self.app._present_envelope(
+            InputEnvelope.for_image(asset, source="屏幕截图"))
+        tab = self.app.window.current_tab()
+        result = SimpleNamespace(ok=True, text=r"\(E = mc^2\)")
+        self.app._on_vision_done(
+            (tab, result, "image.ocr", "提取图片中的文字", "auto"))
+        self.assertEqual(tab.stack.currentIndex(), 1)      # 结果层
+        picked = (tab.last_selection or {}).get("intent_id")
+        self.assertIsNotNone(picked)
+        self.assertNotIn("image", self.app.settings.intent(picked).domains)
+
+    def test_explicit_direct_show_wins_over_compat_default(self):
+        """显式选「直接展示识别结果」不能被老载荷兼容逻辑改成二次查询。"""
+        from types import SimpleNamespace
+        from clipllm02.modality import MemoryAssetStore
+
+        png = b"\x89PNG" + b"0" * 64
+        asset = MemoryAssetStore().put(png, "image/png")
+        self.app._remember_asset(asset, png, "image/png")
+        self.app._present_envelope(
+            InputEnvelope.for_image(asset, source="屏幕截图"))
+        tab = self.app.window.current_tab()
+        result = SimpleNamespace(ok=True, text='{"rows":[["a","1"]]}')
+        self.app._on_vision_done(
+            (tab, result, "image.ocr", "提取图片中的文字", ""))
+        self.assertEqual(tab.stack.currentIndex(), 1)
+        self.assertNotEqual(tab.result_label.text(), "查询预览")
+
+    def test_pinned_route_overrides_classification(self):
+        """图片方式指定了文本模板时，按它选，而不是按判类结果。"""
+        self.assertEqual(self.app._pinned_intent("latex"), "math.legacy")
+        self.assertIsNone(self.app._pinned_intent("no_such_route"))
+
+    def test_vision_done_passes_auto_continue(self):
+        from types import SimpleNamespace
+
+        env = InputEnvelope.for_text("x", source="vision")
+        tab = SimpleNamespace(env=env, request_generation=0)
+        seen: dict = {}
+        self.app.process_text = lambda text, **kw: seen.update(kw, text=text)
+        result = SimpleNamespace(ok=True, text=r"\(E = mc^2\)")
+        self.app._on_vision_done((tab, result, "image.ocr", "提取图片中的文字"))
+        self.assertTrue(seen.get("auto_submit"))
+        self.assertEqual(seen.get("source"), "vision")
+
+    def test_vision_auto_does_not_pin_latex(self):
+        from types import SimpleNamespace
+
+        env = InputEnvelope.for_text("x", source="vision")
+        tab = SimpleNamespace(env=env, request_generation=0)
+        seen: dict = {}
+        self.app.process_text = lambda text, **kw: seen.update(kw, text=text)
+        result = SimpleNamespace(ok=True, text="这是一段中文实验记录，没有公式。")
+        self.app._on_vision_done(
+            (tab, result, "image.ocr", "提取图片中的文字", "auto"))
+        self.assertEqual(seen.get("force_route"), "")
+        self.assertEqual(seen.get("source"), "vision")
+
+
+class TestFactoryCounts(unittest.TestCase):
+    def test_factory_data_counts_are_pinned(self):
+        settings = load_defaults()
+        self.assertEqual(len(settings.routes), 11)
+        self.assertEqual(len(settings.intents), 41)
+        self.assertEqual(len(settings.policy.get("rules", {})), 14)
 
 
 if __name__ == "__main__":

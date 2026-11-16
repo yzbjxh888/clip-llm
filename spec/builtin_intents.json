@@ -236,7 +236,7 @@
         "mixed"
       ],
       "applicable": {
-        "feature": "para_like",
+        "feature": "cn_paragraph_shape",
         "op": "eq",
         "value": true
       },
@@ -301,7 +301,7 @@
         "mixed"
       ],
       "applicable": {
-        "feature": "cn_sentence_like",
+        "feature": "cn_sentence_shape",
         "op": "eq",
         "value": true
       },
@@ -886,26 +886,27 @@
         "mixed"
       ],
       "applicable": null,
-      "primary_route": "image_annotate",
-      "prompt_override": "",
+      "primary_route": "image",
+      "prompt_override": "请找出图片中的关键内容并返回标注框。严格按 JSON 输出 boxes 数组，每项含 x、y、w、h、label；坐标使用 0 到 1 的归一化值。",
       "includes": [],
       "default_format": "annotate",
       "supported_formats": [
         "static",
         "annotate"
       ],
-      "order": 10,
+      "order": 40,
       "enabled": true,
       "conflict_policy": "primary_wins",
       "token_budget": 1400,
       "prompt_version": "2.0.0",
       "schema_version": "1.0.0",
-      "use_legacy_template": true
+      "use_legacy_template": false,
+      "followup_route": ""
     },
     {
       "id": "image.explain",
-      "label": "这张图在讲什么",
-      "hint": "机制图、统计图、结构图的整体解释",
+      "label": "理解这张图",
+      "hint": "机制图 / 统计图 / 公式 / 外文：说明、趋势与译文",
       "domains": [
         "image"
       ],
@@ -914,53 +915,26 @@
         "mixed"
       ],
       "applicable": null,
-      "primary_route": "image_explain",
-      "prompt_override": "",
+      "primary_route": "image",
+      "prompt_override": "请理解并解释这张图片。只输出一个 JSON 对象，只含有内容的字段；没有内容就省略整个字段，不要输出空值或占位符，也不要把同样的内容再用「- 字段: 值」列一遍。\n- type：图片类型（机制图 / 统计图 / 结构图 / 公式 / 界面截图 / 其他）\n- summary：这张图在讲什么，2-4 句：先说结论，再说结构\n- key_points：数组，3-6 条，每条一句话：图中要素之间怎么关联、这张图想说明什么\n- components：数组，仅当图中确有明确要素划分时给出，每项 {\"name\": \"要素\", \"role\": \"它在图中的位置或作用\"}\n- notes：数组，外文术语的中文对照或无法辨认的部分",
       "includes": [],
       "default_format": "static",
       "supported_formats": [
         "static"
       ],
-      "order": 10,
+      "order": 30,
       "enabled": true,
       "conflict_policy": "primary_wins",
       "token_budget": 1600,
       "prompt_version": "2.0.0",
       "schema_version": "1.0.0",
-      "use_legacy_template": true
-    },
-    {
-      "id": "image.chart",
-      "label": "图表趋势与异常",
-      "hint": "统计图读趋势与离群点",
-      "domains": [
-        "image"
-      ],
-      "modalities": [
-        "image",
-        "mixed"
-      ],
-      "applicable": null,
-      "primary_route": "image_explain",
-      "prompt_override": "只读图表数据，不做通用描述。只输出这些字段：\n- title：字符串，图表标题\n- axes：数组，每项 {\"axis\": \"x 或 y\", \"label\": \"轴名\", \"unit\": \"单位\", \"range\": \"范围\"}\n- trend：字符串，整体趋势\n- turning_points：数组，每项 {\"where\": \"位置\", \"change\": \"变化\"}\n- anomalies：数组，每项 {\"where\": \"位置\", \"value\": \"数值\", \"explain\": \"可能解释\"}\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
-      "includes": [],
-      "default_format": "static",
-      "supported_formats": [
-        "static"
-      ],
-      "order": 20,
-      "enabled": true,
-      "free_input_only": false,
-      "conflict_policy": "primary_wins",
-      "token_budget": 1400,
-      "prompt_version": "3.0.0",
-      "schema_version": "1.0.0",
-      "use_legacy_template": false
+      "use_legacy_template": false,
+      "followup_route": ""
     },
     {
       "id": "image.ocr",
       "label": "提取图片中的文字",
-      "hint": "OCR，保留原有阅读顺序",
+      "hint": "OCR：文字与公式转成文本，再进入初判",
       "domains": [
         "image"
       ],
@@ -969,8 +943,8 @@
         "mixed"
       ],
       "applicable": null,
-      "primary_route": "image_ocr",
-      "prompt_override": "",
+      "primary_route": "image",
+      "prompt_override": "请识别图片中的文字和数学公式。公式用 LaTeX 表示，行内公式用 $...$ 包裹，独立公式用 $$...$$ 包裹并单独占一行。保留原有阅读顺序，只返回识别结果，不要添加额外解释。",
       "includes": [],
       "default_format": "static",
       "supported_formats": [
@@ -982,71 +956,8 @@
       "token_budget": 1400,
       "prompt_version": "2.0.0",
       "schema_version": "1.0.0",
-      "use_legacy_template": true
-    },
-    {
-      "id": "image.formula",
-      "label": "识别公式并解释",
-      "hint": "提取 LaTeX 后给出含义与推导",
-      "domains": [
-        "image"
-      ],
-      "modalities": [
-        "image",
-        "mixed"
-      ],
-      "applicable": null,
-      "primary_route": "image_ocr",
-      "prompt_override": "先提取公式，再解释。只输出这些字段：\n- title：字符串，图片内容或公式的简短标题\n- latex：数组，字符串，图中每个公式的 LaTeX，反斜杠双写\n- symbols：数组，每项 {\"symbol\": \"符号，反斜杠双写\", \"meaning\": \"含义\"}\n- premises：数组，字符串，成立前提\n- outline：字符串，推导思路\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
-      "includes": [
-        {
-          "route_id": "latex",
-          "sections": [
-            "structure",
-            "meaning"
-          ],
-          "as": "公式解析要求"
-        }
-      ],
-      "default_format": "static",
-      "supported_formats": [
-        "static"
-      ],
-      "order": 20,
-      "enabled": true,
-      "conflict_policy": "primary_wins",
-      "token_budget": 1800,
-      "prompt_version": "3.0.0",
-      "schema_version": "1.0.0"
-    },
-    {
-      "id": "image.translate",
-      "label": "翻译图中文字",
-      "hint": "提取并译成中文",
-      "domains": [
-        "image"
-      ],
-      "modalities": [
-        "image",
-        "mixed"
-      ],
-      "applicable": null,
-      "primary_route": "image_ocr",
-      "prompt_override": "先提取文字，再翻译。只输出这些字段：\n- title：字符串，简短标题\n- pairs：数组，每项 {\"source\": \"原文\", \"target\": \"中文译文\"}\n- latex：数组，字符串，图中公式的 LaTeX，反斜杠双写\n- notes：数组，字符串，翻译中的歧义或无法识别的部分\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
-      "includes": [],
-      "default_format": "table",
-      "supported_formats": [
-        "static",
-        "table"
-      ],
-      "order": 30,
-      "enabled": true,
-      "free_input_only": false,
-      "conflict_policy": "primary_wins",
-      "token_budget": 1400,
-      "prompt_version": "3.0.0",
-      "schema_version": "1.0.0",
-      "use_legacy_template": false
+      "use_legacy_template": false,
+      "followup_route": "auto"
     },
     {
       "id": "image.table",
@@ -1060,21 +971,22 @@
         "mixed"
       ],
       "applicable": null,
-      "primary_route": "image_table",
-      "prompt_override": "",
+      "primary_route": "image",
+      "prompt_override": "请提取图片中的表格与数据，还原行列结构与数值。严格按 JSON 输出，不要添加解释。",
       "includes": [],
       "default_format": "table",
       "supported_formats": [
         "static",
         "table"
       ],
-      "order": 10,
+      "order": 20,
       "enabled": true,
       "conflict_policy": "primary_wins",
       "token_budget": 1400,
       "prompt_version": "2.0.0",
       "schema_version": "1.0.0",
-      "use_legacy_template": true
+      "use_legacy_template": false,
+      "followup_route": ""
     },
     {
       "id": "math.legacy",
