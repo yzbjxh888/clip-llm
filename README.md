@@ -14,7 +14,7 @@
 <p align="center">
   <img src="assets/screenshots/01-first-layer.png" width="860" alt="clip-llm 第一层：本地初判菜单">
 </p>
-<p align="center"><em>复制 <code>NaCl</code> 后自动弹出：本地初判为「化学物质」，并列出 4 条专属查询方式与 6 个其他角度</em></p>
+<p align="center"><em>复制一段中文后自动弹出：本地初判为「中文词语」，列出 2 条专属查询方式与 6 个其他角度</em></p>
 
 ---
 
