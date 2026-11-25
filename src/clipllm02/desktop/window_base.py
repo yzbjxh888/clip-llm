@@ -249,6 +249,13 @@ class ResizableWindow(QWidget):
         self._floated = True
         self._pin_timer.start()            # 400ms → _unfloat()
 
+    def extend_flash(self, ms: int = 1500) -> None:
+        """延长本次置顶窗口，给鼠标移入并点击菜单留出时间。"""
+        if self._is_offscreen() or not getattr(self, "_floated", False):
+            return
+        self._pin_timer.stop()
+        self._pin_timer.start(ms)
+
     def _float(self) -> None:
         """置顶弹窗（弹出时 / 用户移入时）。
 

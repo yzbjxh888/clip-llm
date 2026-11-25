@@ -14,7 +14,7 @@ from pathlib import Path
 
 from ..settings import Settings, load_defaults, load_settings
 
-CONFIG_VERSION = 7
+CONFIG_VERSION = 8
 DEFAULT_DESKTOP_DUP_TTL = 1
 # 历次出厂搜索源的 id。老配置里若只有这些（说明用户没自定义过），升级时
 # 直接换成最新出厂值；含 custom.* 等自定义项则原样保留。
@@ -163,6 +163,10 @@ def load_config() -> Settings:
     if changed:
         user["intents"] = _merge_intents(factory, user)
         user["config_version"] = CONFIG_VERSION
+        # 识别结果不再自动续跑：关掉后点哪条图片查询方式就出哪条结果，
+        # 不会被默认的文本方式抢走，看起来像「点了没反应」。
+        user.setdefault("image", {})["auto_continue"] = bool(
+            (factory.get("image") or {}).get("auto_continue", False))
         # 搜索源随出厂值升级。老配置里若全是历次出厂项（没自定义过），
         # 直接用新出厂值；用户自己加过搜索源则原样保留。
         old = user.get("search_providers") or []

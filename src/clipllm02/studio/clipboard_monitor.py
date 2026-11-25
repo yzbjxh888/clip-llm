@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import time
 
 from PySide6.QtCore import QBuffer, QObject, QProcess, QTimer, Signal
 from PySide6.QtGui import QImage
@@ -42,6 +43,8 @@ class ClipboardMonitor(QObject):
         self._watch_flush.setInterval(150)
         self._watch_flush.timeout.connect(self._flush_watch)
         self._last_digest = ""
+        self._last_image_digest = ""
+        self._last_image_at = 0.0         # 图像事件时间，区分双通道重复与重新复制
         self._active = True               # 兼容旧测试的开关语义
         self._suppressed: set[str] = set()
         self.last_image: tuple[bytes, str] | None = None
@@ -93,8 +96,7 @@ class ClipboardMonitor(QObject):
             if start >= 0:
                 data = data[start:]
             if data.startswith(b"\x89PNG") and data.endswith(b"IEND\xaeB`\x82"):
-                self.last_image = (data, "image/png")
-                self.image_found.emit()
+                self._accept_image(data, "image/png")
 
     def _restart_watch(self) -> None:
         if not self._active or self._watch is None:
@@ -123,6 +125,11 @@ class ClipboardMonitor(QObject):
         return hashlib.sha256(data).hexdigest()
 
     def _emit_text(self, text: str) -> None:
+        # 图片事件刚发生（1 秒内）的文本是同一次复制的附带内容（文件名 /
+        # URL / 图片说明）。放行会让图片初判被作废或覆盖，成「点了没反应」。
+        # Wayland 的图片 / 文本是两条独立 watch，无法在同函数判断，这里兜底。
+        if self._last_image_at and time.monotonic() - self._last_image_at < 1.0:
+            return
         # 相同内容不去重：用户重复复制相同词也应再次弹窗（词典软件惯例）。
         # 抖动与双通道重复由 app 层的 desktop_dup_ttl 短窗口去重兜底。
         import os
@@ -137,17 +144,43 @@ class ClipboardMonitor(QObject):
         if self._active:
             self.text_found.emit(text)
 
+    def _accept_image(self, data: bytes, mime: str) -> bool:
+        """收一张剪贴板图，抑制「同一次复制」的双通道重复上报。
+
+        watch 与 dataChanged 会在几百毫秒内对同一次复制各报一次；但用户
+        隔一会儿重新复制**同一张**图，是明确的新动作，必须再次发出事件。
+        用「内容摘要 + 1 秒窗口」区分二者：窗口内同摘要丢弃，窗口外放行。
+        返回是否真的发出了图片事件，供调用方抑制同一次的文本事件。
+        """
+        digest = self._digest(data)
+        now = time.monotonic()
+        if (digest == self._last_image_digest
+                and now - self._last_image_at < 1.0):
+            return False
+        self._last_image_digest = digest
+        self._last_image_at = now
+        self.last_image = (data, mime)
+        self.image_found.emit()
+        return True
+
     def _emit_changes(self) -> None:
-        """X11 dataChanged 路径。"""
+        """X11 dataChanged 路径。
+
+        一次「复制图片」事件里剪贴板往往**同时**带图片和文本（文件名 /
+        URL / @image: 路径 / 图片说明）。若两个都上报，图片初判刚弹出，
+        紧随的文本就会走 process_text —— 要么把当前标签标成 invalidated
+        让图片按钮全部静默失效，要么把图片初判覆盖成文本初判。
+        所以同一次事件里图片被接受就不再上报文本。
+        """
         clipboard = QApplication.clipboard()
         image = clipboard.image()
+        image_accepted = False
         if not image.isNull():
             data = image_to_png_bytes(image)
-            if data and self._digest(data) != self._last_digest:
-                self.last_image = (data, "image/png")
-                self.image_found.emit()
+            if data:
+                image_accepted = self._accept_image(data, "image/png")
         text = clipboard.text().strip()
-        if text:
+        if text and not image_accepted:
             self._emit_text(text)
 
     # -- 兼容 / 控制 -------------------------------------------------------
@@ -157,7 +190,14 @@ class ClipboardMonitor(QObject):
             self._suppressed.add(self._digest(text.encode("utf-8")))
 
     def take_image(self) -> tuple[bytes, str] | None:
-        """取走最近一张剪贴板图片（取后清空，避免重复使用）。"""
+        """取走最近一张剪贴板图片。
+
+        取后清空 last_image，但**不清内容摘要**：那道摘要只用于抑制
+        watch / dataChanged 双通道的同一次复制。若在这里清掉，用户
+        「同一张图重新复制再查一次」会被误判成新事件反复弹窗；反过来
+        也不能永久记住摘要，否则同一张图永远发不出第二次事件。
+        这里保留摘要到下一次真正不同的内容到来为止即可。
+        """
         image, self.last_image = self.last_image, None
         return image
 

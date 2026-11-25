@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>04 · 一体感与幂等自适应 — clip-llm 草稿</title>
+<style>
+:root{
+  /* 现代中性色阶：冷灰底 + 单一靛蓝强调，去掉暖纸与衬线 */
+  --paper:#ffffff;
+  --paper-raised:#f7f8fa;
+  --paper-hover:#eef0f4;
+  --paper-edge:#e3e6ec;
+  --ink:#0f1729;
+  --ink-2:#5b6472;
+  --ink-3:#9aa3b2;
+  --accent:#4f46e5;
+  --accent-2:#6366f1;
+  --accent-soft:#eef0fe;
+  --line:#e8eaef;
+  --ring:rgba(79,70,229,.16);
+  --shadow:0 1px 2px rgba(15,23,41,.04), 0 8px 24px rgba(15,23,41,.06);
+  --shadow-lg:0 12px 40px rgba(15,23,41,.10);
+  --sans:"Inter","Helvetica Neue","Noto Sans CJK SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Inter","Helvetica Neue","Noto Sans CJK SC","Microsoft YaHei",system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:14px/1.6 var(--sans);color:var(--ink);background:#eceef2;min-height:100vh;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+
+/* 原型控制台：现代深色工具条 + 分段控件 */
+.console{position:sticky;top:0;z-index:9;background:rgba(15,23,41,.94);
+  backdrop-filter:saturate(1.4) blur(8px);color:#e7eaf0;padding:14px 22px;
+  border-bottom:1px solid rgba(255,255,255,.06)}
+.console h1{font:600 15px var(--sans);margin-bottom:3px;letter-spacing:-.01em}
+.console h1 span{font:400 11px var(--sans);color:#8b95a7;margin-left:8px}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px}
+.row>em{font-style:normal;font-size:11px;color:#7c8698;min-width:58px;letter-spacing:.02em}
+.sw{display:inline-flex;gap:2px;flex-wrap:wrap;background:rgba(255,255,255,.05);
+  padding:3px;border-radius:9px;border:1px solid rgba(255,255,255,.05)}
+.sw button{background:transparent;color:#c3cad6;border:none;border-radius:6px;
+  padding:5px 12px;font:500 12px var(--sans);cursor:pointer;transition:all .16s ease}
+.sw button:hover{color:#fff;background:rgba(255,255,255,.07)}
+.sw button.on{background:var(--accent);color:#fff;box-shadow:0 2px 8px rgba(79,70,229,.4)}
+.range{display:flex;align-items:center;gap:10px;color:#c3cad6;font-size:12px}
+.range input{width:220px;height:4px;accent-color:var(--accent);cursor:pointer}
+
+main{padding:26px 22px 64px}
+.stage-head{display:flex;justify-content:space-between;align-items:baseline;max-width:1000px;margin:0 auto 12px}
+.stage-head strong{font:600 17px var(--sans);letter-spacing:-.015em}
+.stage-head span{font-size:12px;color:var(--ink-3)}
+
+.probe{max-width:1000px;margin:0 auto 14px;display:flex;gap:8px;flex-wrap:wrap}
+.probe div{background:var(--paper);border:1px solid var(--line);border-radius:9px;
+  padding:6px 13px;font-size:11px;color:var(--ink-2);box-shadow:var(--shadow)}
+.probe b{color:var(--accent);font-weight:600}
+
+#stage{display:flex;justify-content:center}
+.window{
+  container-type:inline-size;
+  width:720px;max-width:100%;height:600px;
+  background:var(--paper);
+  border:1px solid var(--line);
+  border-radius:clamp(12px,2cqi,18px);
+  padding:clamp(12px,2.2cqi,22px) clamp(12px,2.4cqi,24px);
+  display:flex;flex-direction:column;overflow:hidden;
+  box-shadow:var(--shadow-lg);
+  transition:border-radius .18s ease-out;
+}
+.topbar{display:flex;align-items:center;gap:8px;padding-bottom:clamp(10px,1.6cqi,16px);flex:none}
+.query{flex:1;min-width:0;height:38px;padding:0 14px;background:var(--paper-raised);
+  border:1px solid transparent;border-radius:10px;color:var(--ink);font:14px var(--sans);transition:all .16s ease}
+.query:focus{outline:none;background:var(--paper);border-color:var(--accent);box-shadow:0 0 0 4px var(--ring)}
+.iconbtn{width:36px;height:36px;flex:none;display:inline-flex;align-items:center;justify-content:center;
+  background:var(--paper-raised);border:1px solid transparent;border-radius:10px;color:var(--ink-2);
+  cursor:pointer;padding:0;transition:all .16s ease}
+.iconbtn:hover{background:var(--accent-soft);color:var(--accent)}
+.iconbtn.primary{background:var(--accent);color:#fff;box-shadow:0 2px 10px rgba(79,70,229,.35)}
+.iconbtn.primary:hover{background:var(--accent-2);color:#fff}
+.iconbtn svg{width:18px;height:18px}
+.meta{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--ink-3);
+  padding-bottom:10px;border-bottom:1px solid var(--line);flex:none;letter-spacing:.01em}
+.meta .sp{flex:1}
+.badge{font-size:10px;font-weight:500;padding:2px 9px;border-radius:20px;background:var(--paper-hover);color:var(--ink-2)}
+.badge.error{background:var(--accent-soft);color:var(--accent)}
+
+.scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding-right:6px;
+  scrollbar-width:thin;scrollbar-color:var(--paper-edge) transparent}
+.scroll::-webkit-scrollbar{width:8px}
+.scroll::-webkit-scrollbar-track{background:transparent}
+.scroll::-webkit-scrollbar-thumb{background:var(--paper-edge);border-radius:8px;border:2px solid var(--paper)}
+.scroll::-webkit-scrollbar-thumb:hover{background:#cbd0da}
+
+h2.sec{font:600 11px var(--sans);color:var(--ink-3);letter-spacing:.08em;text-transform:uppercase;margin:18px 0 8px}
+.caption{font:600 20px var(--sans);margin:2px 0 4px;letter-spacing:-.02em}
+.sub{font-size:12px;color:var(--ink-2)}
+
+.intents{display:grid;gap:8px;grid-template-columns:repeat(2,minmax(0,1fr))}
+.intent{display:flex;align-items:center;gap:8px;width:100%;min-width:0;text-align:left;
+  background:var(--paper-raised);border:1px solid transparent;border-left:3px solid transparent;
+  border-radius:11px;padding:11px 13px;min-height:46px;color:var(--ink);font:14px var(--sans);
+  cursor:pointer;transition:all .16s ease}
+.intent:hover{background:var(--paper-hover);border-color:var(--line);transform:translateY(-1px)}
+.intent.default{border-left-color:var(--accent);font-weight:600;background:var(--accent-soft)}
+.intent .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.intent .n{font-size:11px;font-weight:600;color:var(--ink-3);min-width:16px}
+.intent .go{color:var(--accent);font-size:14px;opacity:0;transition:opacity .16s ease;font-weight:600}
+.intent:hover .go{opacity:1}
+
+.others{display:grid;gap:8px;grid-template-columns:repeat(2,minmax(0,1fr))}
+.other{text-align:left;background:transparent;border:1px solid var(--line);border-radius:9px;
+  padding:8px 12px;min-height:36px;color:var(--ink-2);font:13px var(--sans);cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:all .16s ease}
+.other:hover{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+@container (max-width:460px){.intents,.others{gap:6px}}
+@container (min-width:700px){.intents,.others{gap:10px}}
+
+.center{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;color:var(--ink-2)}
+.center strong{font:600 17px var(--sans);color:var(--ink);letter-spacing:-.01em}
+.center p{font-size:12px;max-width:340px;line-height:1.7}
+.chips{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+.chips button{margin:2px;padding:7px 14px;border:1px solid var(--line);border-radius:9px;
+  background:var(--paper-raised);font:12px var(--sans);color:var(--ink-2);cursor:pointer;transition:all .16s ease}
+.chips button:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.sk{height:10px;border-radius:6px;background:linear-gradient(90deg,var(--paper-hover) 25%,#e6e9ef 50%,var(--paper-hover) 75%);background-size:200% 100%;animation:shine 1.3s linear infinite;margin:9px 0}
+.sk.w40{width:40%}.sk.w70{width:70%}.sk.tall{height:52px}
+@keyframes shine{from{background-position:200% 0}to{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){.sk{animation:none}}
+.notice{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 15px;border-radius:0 11px 11px 0;margin:12px 0}
+.notice strong{color:var(--accent);font-size:13px;font-weight:600}
+.notice p{font-size:12px;color:var(--ink-2);margin-top:4px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.actions button{padding:7px 15px;border:1px solid var(--line);border-radius:9px;background:var(--paper-raised);font:12px var(--sans);font-weight:500;color:var(--ink);cursor:pointer;transition:all .16s ease}
+.actions button.primary{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 2px 10px rgba(79,70,229,.3)}
+.actions button:hover{border-color:var(--accent);color:var(--accent)}
+.actions button.primary:hover{color:#fff;background:var(--accent-2)}
+
+.bubble{background:var(--accent);color:#fff;border-radius:13px 13px 4px 13px;padding:8px 14px;
+  margin:10px 0 10px auto;max-width:76%;width:fit-content;font-size:13px;text-align:right;
+  box-shadow:0 2px 10px rgba(79,70,229,.25)}
+.answer{padding:2px 0 14px;border-bottom:1px solid var(--line)}
+.answer h3{font:600 17px var(--sans);margin-bottom:6px;letter-spacing:-.01em}
+.answer p{font-size:13px;margin:4px 0;color:var(--ink)}
+.answer b{color:var(--accent);font-weight:600}
+table{border-collapse:separate;border-spacing:0;width:100%;margin:10px 0;font-size:12px;
+  border:1px solid var(--line);border-radius:11px;overflow:hidden}
+th,td{border-bottom:1px solid var(--line);padding:9px 12px;text-align:left}
+tr:last-child td{border-bottom:none}
+th{color:var(--ink);font-weight:600;background:var(--paper-raised);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+td:first-child{font-weight:500}
+.follow{display:flex;gap:8px;margin-top:12px;flex:none}
+.follow input{flex:1;height:40px;padding:0 14px;border:1px solid var(--line);border-radius:11px;background:var(--paper-raised);font:13px var(--sans);transition:all .16s ease}
+.follow input:focus{outline:none;background:var(--paper);border-color:var(--accent);box-shadow:0 0 0 4px var(--ring)}
+.follow input::placeholder{color:var(--ink-3)}
+
+.form{display:grid;grid-template-columns:130px 1fr;gap:14px 14px;align-items:center;font-size:13px;margin-top:12px}
+.form label{color:var(--ink-2);font-weight:500}
+.form input[type=number]{height:36px;width:96px;padding:0 11px;border:1px solid var(--line);border-radius:9px;background:var(--paper-raised);font:13px var(--sans);transition:all .16s ease}
+.form input[type=number]:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 4px var(--ring);background:var(--paper)}
+.form input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px}
+.form .wide{grid-column:1/-1;color:var(--ink-2);line-height:1.8;font-size:12px;background:var(--paper-raised);border-radius:11px;padding:12px 14px;border:1px solid var(--line)}
+.dlg{display:flex;justify-content:flex-end;gap:8px;margin-top:20px;padding-top:14px;border-top:1px solid var(--line)}
+.dlg button{padding:8px 16px;border:1px solid var(--line);border-radius:9px;background:var(--paper-raised);font:12px var(--sans);font-weight:500;color:var(--ink);cursor:pointer;transition:all .16s ease}
+.dlg button.primary{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 2px 10px rgba(79,70,229,.3)}
+.dlg button:hover{border-color:var(--accent);color:var(--accent)}
+.dlg button.primary:hover{color:#fff;background:var(--accent-2)}
+
+.legend{max-width:1000px;margin:30px auto 0;background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px 20px;box-shadow:var(--shadow)}
+.legend h2{font:600 15px var(--sans);margin-bottom:8px;letter-spacing:-.01em}
+.legend p{font-size:12px;color:var(--ink-2);line-height:1.9}
+.legend code{background:var(--accent-soft);color:var(--accent);padding:2px 6px;border-radius:6px;font-size:11px;font-weight:500}
+.legend b{color:var(--ink);font-weight:600}
+</style>
+</head>
+<body>
+<header class="console">
+  <h1>方向 04 · 现代简洁重制<span>统一中性色阶 + 靛蓝强调；两处网格恒定两列；功能与内容完全保留</span></h1>
+  <div class="row"><em>页面</em><div class="sw" id="pg">
+    <button data-page="detect" class="on">初判</button><button data-page="result">结果</button><button data-page="look">设置 · 外观</button>
+  </div></div>
+  <div class="row"><em>状态</em><div class="sw" id="st">
+    <button data-state="normal" class="on">正常</button><button data-state="empty">empty</button><button data-state="loading">loading</button><button data-state="error">error</button><button data-state="long">超长内容</button>
+  </div></div>
+  <div class="row"><em>内容</em><div class="sw" id="ct">
+    <button data-content="nacl" class="on">NaCl</button><button data-content="emc2">E=mc²</button><button data-content="zh">中文长句</button>
+  </div></div>
+  <div class="row"><em>窗口宽度</em><div class="range"><input id="widthRange" type="range" min="360" max="900" value="720"><span id="widthLabel">720px</span></div>
+    <span style="font-size:11px;color:#a9a294">拖到同一宽度反复来回，下面的「重排次数 / 节点数」不会涨</span></div>
+</header>
+<main>
+  <div class="stage-head"><strong id="title"></strong><span id="note"></span></div>
+  <div class="probe">
+    <div>当前档位 <b id="pTier">—</b></div>
+    <div>重排次数 <b id="pCount">0</b></div>
+    <div>窗口内节点数 <b id="pNodes">0</b></div>
+    <div>两处网格列数（恒定） <b id="pCols">2</b></div>
+  </div>
+  <div id="stage"></div>
+  <section class="legend">
+    <h2>这一版改了什么</h2>
+    <p>· <b>现代简洁</b>：统一冷中性色阶（白表面 + 靛蓝强调），去掉暖纸底色与衬线标题，全站改无衬线；卡片柔和圆角 + 轻投影，输入框聚焦有蓝色描边光环，滚动条更细更干净。<br>
+    · <b>常用查询方式 + 其他角度</b>：两处都是<b>恒定两列</b>（任何窗口宽度都不变，也不出现 3 / 4 列），间距 4–8px 随宽度微调；主推荐 42px / 15px、其他角度 34px / 13px，靠字号行高与强调细条分主次。<br>
+    · <b>组件质感</b>：分段控件、悬停微抬、追问气泡改现代 IM 样式，表格加圆角包裹，按钮统一靛蓝主/灰次级；功能、页面与内容一项不减。<br>
+    · <b>幂等自适应</b>：外框内边距 / 圆角用 <code>clamp() + cqi</code> 连续跟随窗口宽度；<code>@container</code> 只调间距、<b>不改列数</b>；JS 只在档位变化时写一次 <code>data-tier</code>，档位不变不碰 DOM、不重建控件。<br>
+    · 保留定稿：顶栏 3 个图标、无底部区域、暖纸色基调、三种真实内容、四种状态。</p>
+  </section>
+</main>
+<script>
+const C={
+  nacl:{label:'NaCl',cat:'化学物质',hint:'氯化钠 · 食盐',
+    intents:['综合化学条目','这个式子该怎么念','反应条件与配平','和相近物质怎么区分','组成与结构','安全与储存'],
+    others:['历史背景与起源','实际应用场景','与相近概念对比','争议与不同观点','发展过程','其他解读方式']},
+  emc2:{label:'E=mc²',cat:'LaTeX 公式',hint:'质能方程',
+    intents:['综合公式解析','逐项读这个式子','把它推出来','量纲与适用条件','数值算例','直观类比','等价变形','实验依据'],
+    others:['历史背景与起源','发展过程','其他解读方式','实际应用场景']},
+  zh:{label:'中文长句',cat:'中文 / 术语',hint:'论述句 · 需滚动',
+    text:'尽管这个结论在多数教科书里被当作不证自明的前提，但如果我们把观察尺度缩小到单个分子的热运动，就会发现它其实依赖一个很少被明说的假设，即系统足够大且足够接近平衡态。',
+    intents:['这句话在说什么','拆解这段论述','前提与结论','修辞与语气','改写','隐含假设'],
+    others:['历史背景与起源','其他解读方式','争议与不同观点','与相近概念对比','发展过程','实际应用场景']}
+};
+const TABLE=[['与浓硫酸','2NaCl + H₂SO₄ → Na₂SO₄ + 2HCl','加热'],
+ ['电解饱和食盐水','2NaCl + 2H₂O → 2NaOH + H₂↑ + Cl₂↑','通电'],
+ ['与硝酸银','NaCl + AgNO₃ → AgCl↓ + NaNO₃','常温'],
+ ['焰色反应','钠离子使火焰呈黄色','—'],
+ ['溶解度','20 °C 时约 36 g / 100 g 水','常温'],
+ ['熔融电解','2NaCl(l) → 2Na + Cl₂↑','约 801 °C']];
+const I={
+ find:'<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/>',
+ globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>',
+ plus:'<path d="M12 5v14M5 12h14"/>',
+ send:'<path d="M4 12l16-8-6 16-3-6-7-2z"/>'
+};
+const svg=k=>'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(I[k]||I.find)+'</svg>';
+const icon=(k,t,primary)=>'<button class="iconbtn'+(primary?' primary':'')+'" data-act="probe" title="'+t+'" aria-label="'+t+'">'+svg(k)+'</button>';
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const STATES={normal:'正常',empty:'empty · 空',loading:'loading · 处理中',error:'error · 出错',long:'超长内容'};
+const PAGES={detect:'初判页',result:'结果页',look:'设置 · 外观'};
+let cur={page:'detect',state:'normal',content:'nacl'};
+
+function intents(list,long){
+  const items=long?[...list,...C.nacl.intents,...C.emc2.intents,...list].slice(0,24):list;
+  return '<div class="intents">'+items.map((t,i)=>'<button class="intent'+(i===0?' default':'')+'" data-act="pick">'+
+    (long&&i<9?'<span class="n">'+(i+1)+'</span>':'')+
+    '<span class="txt">'+esc(t)+'</span><span class="go">→</span></button>').join('')+'</div>';
+}
+function others(list,long){
+  const items=long?[...list,...C.nacl.others,...C.emc2.others,...list].slice(0,20):list;
+  return '<div class="others">'+items.map(t=>'<button class="other" data-act="pick" title="'+esc(t)+'">'+esc(t)+'</button>').join('')+'</div>';
+}
+function center(title,text,chips){return '<div class="center"><strong>'+title+'</strong><p>'+text+'</p>'+(chips?'<div class="chips">'+chips+'</div>':'')+'</div>'}
+function detect(){
+  const d=C[cur.content],s=cur.state,long=s==='long';
+  if(s==='empty')return center('还没有查询内容','复制一段文字，或在上面输入后回车。本地判断类别，不发网络请求。',
+    '<button data-content="nacl">试试 NaCl</button><button data-content="emc2">试试 E=mc²</button>');
+  if(s==='loading')return '<div class="bubble">'+esc(d.label)+'</div><p class="sub">正在判断类别…</p>'+
+    '<div class="sk w40"></div><div class="sk w70"></div><div class="sk tall"></div><div class="sk w70"></div>';
+  if(s==='error')return '<div class="notice"><strong>! 这段内容被拦截了</strong><p>检测到 URL 特征，按当前拦截规则不会发送到第三方模型。原文仍留在查询框里。</p></div>'+
+    '<div class="actions"><button class="primary" data-act="retry">仍然本地解释</button><button>换一种解释</button><button>复制原文</button></div>';
+  const q=cur.content==='zh'?C.zh.text:d.label;
+  return '<div class="caption">初判 · '+esc(long?'中文 / 术语':d.cat)+'</div>'+
+    '<p class="sub">'+esc(long?C.zh.text:q+' · '+d.hint)+'</p>'+
+    '<h2 class="sec">常用查询方式'+(long?' · 共 24 条，可滚动':'')+'</h2>'+intents(long?C.zh.intents:d.intents,long)+
+    '<h2 class="sec">其他角度'+(long?' · 共 20 条':'')+'</h2>'+others(long?C.zh.others:d.others,long);
+}
+function result(){
+  const d=C[cur.content],s=cur.state,long=s==='long';
+  if(s==='empty')return center('还没有结果','回到初判页选一个查询方式，结果会出现在这里。','<button data-page="detect">去初判页</button>');
+  if(s==='loading')return '<div class="bubble">'+esc(d.label)+'</div><p class="sub">正在生成第 1 轮回答…</p>'+
+    '<div class="sk w40"></div><div class="sk w70"></div><div class="sk tall"></div><div class="sk w70"></div><div class="sk w40"></div>';
+  if(s==='error')return '<div class="bubble">'+esc(d.label)+'</div><div class="notice"><strong>! 模型未返回内容</strong><p>接口超时（45 秒）。本次只组装了请求，没有写入知识库。</p></div>'+
+    '<div class="actions"><button class="primary" data-act="retry">重试</button><button data-page="detect">返回初判</button></div>';
+  const rows=long?TABLE:TABLE.slice(0,3);
+  let html='<div class="bubble">'+esc(d.label)+'</div><div class="answer"><h3>氯化钠</h3>'+
+    '<p><b>读法</b> 氯化钠 / sodium chloride，化学式 NaCl。</p><p><b>常见反应</b></p>'+
+    '<table><tr><th>反应</th><th>方程式</th><th>条件</th></tr>'+
+    rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td>'+esc(r[1])+'</td><td>'+esc(r[2])+'</td></tr>').join('')+'</table></div>'+
+    '<div class="bubble">追问：那它为什么能融雪？</div><div class="answer"><p>盐溶于水后降低水的凝固点，让 0 °C 附近的冰重新融化；温度过低时效果明显变差。</p></div>';
+  if(long)html+='<div class="bubble">追问：和氯化钙比呢？</div><div class="answer"><p>氯化钠约 -10 °C 以上有效，便宜易得；氯化钙可到 -30 °C 左右，溶解放热但成本更高。</p></div>';
+  return html;
+}
+function look(){
+  const s=cur.state;
+  if(s==='empty')return center('设置还没读进来','首次启动或配置文件尚未载入，点「重新读取」按默认值填好。','<button data-act="retry">重新读取</button>');
+  if(s==='loading')return '<p class="sub">正在读取 settings.json…</p><div class="sk w40"></div><div class="sk w70"></div><div class="sk tall"></div>';
+  if(s==='error')return '<div class="notice"><strong>! 配置校验失败</strong><p>结果卡片字号必须在 9–28 之间，当前是 31。</p></div>'+
+    '<div class="form"><label>结果卡片字号</label><div><input type="number" value="31" style="border-color:var(--accent)"><span style="font-size:11px;color:var(--accent);margin-left:8px">超出范围</span></div></div>'+
+    '<div class="actions"><button class="primary" data-act="retry">改回 14</button></div>';
+  return '<div class="caption" style="font-size:17px">外观</div><div class="form">'+
+    '<label>结果卡片字号</label><div><input type="number" value="14" min="9" max="28"> <span style="font-size:11px;color:var(--ink-2)">9–28</span></div>'+
+    '<label>深色主题</label><div><input type="checkbox"> 深色主题（窗口、按钮、气泡一起变深）</div>'+
+    '<div class="wide">结果排版、查询栏与标签页字号即时生效；主窗口可边缘缩放并记忆尺寸位置。'+
+    (s==='long'?'<br>字号同时作用于结果卡片正文、表格、公式与追问气泡；调整后已打开的结果会按新字号现场重排，缓存里的旧排版不会复用。':'')+'</div></div>'+
+    '<div class="dlg"><button>取消</button><button>应用</button><button class="primary">确定</button></div>';
+}
+function shell(inner){
+  const d=C[cur.content],q=cur.content==='zh'?C.zh.text.slice(0,26)+'…':d.label;
+  return '<div class="window" id="win"><div class="topbar">'+
+    '<input class="query" value="'+esc(q)+'" readonly>'+
+    icon('find','查询（回车同效）',true)+icon('globe','用浏览器搜索当前内容')+icon('plus','在新标签查询')+
+    '</div><div class="meta"><span>'+PAGES[cur.page]+'</span><span class="badge'+(cur.state==='error'?' error':'')+'">'+STATES[cur.state]+'</span>'+
+    '<span class="sp"></span><span>本地预览 · 未发送网络请求</span></div>'+
+    '<div class="scroll">'+inner+'</div>'+
+    (cur.page==='result'?'<div class="follow"><input placeholder="针对这次结果继续追问…">'+icon('send','发送追问（回车）',true)+'</div>':'')+
+    '</div>';
+}
+function render(){
+  const inner=cur.page==='detect'?detect():cur.page==='result'?result():look();
+  document.getElementById('stage').innerHTML=shell(inner);
+  document.getElementById('title').textContent='方向 04 — '+PAGES[cur.page]+' / '+STATES[cur.state];
+  document.getElementById('note').textContent='内容：'+(cur.content==='zh'?'中文长句':C[cur.content].label);
+  document.querySelectorAll('#pg button').forEach(b=>b.classList.toggle('on',b.dataset.page===cur.page));
+  document.querySelectorAll('#st button').forEach(b=>b.classList.toggle('on',b.dataset.state===cur.state));
+  document.querySelectorAll('#ct button').forEach(b=>b.classList.toggle('on',b.dataset.content===cur.content));
+  bindWidth();
+}
+
+/* —— 幂等自适应：只在档位变化时写一次 DOM —— */
+let lastTier=null,relayouts=0,ro=null;
+/* 档位只用于外框与间距；列数恒定 2，不参与档位计算 */
+const TIERS=[{name:'窄',max:460},{name:'中',max:700},{name:'宽',max:Infinity}];
+function tierFor(w){return TIERS.find(t=>w<=t.max)}
+function bindWidth(){
+  const win=document.getElementById('win'); if(!win)return;
+  if(ro)ro.disconnect();
+  ro=new ResizeObserver(entries=>{
+    const w=Math.round(entries[0].contentRect.width);
+    const t=tierFor(w);
+    document.getElementById('pNodes').textContent=win.querySelectorAll('*').length;
+    document.getElementById('pCols').textContent=2;   // 恒定两列
+    if(t.name===lastTier)return;               // 幂等：档位不变，什么都不写
+    lastTier=t.name;relayouts++;
+    win.dataset.tier=t.name;
+    document.getElementById('pTier').textContent=t.name;
+    document.getElementById('pCount').textContent=relayouts;
+  });
+  ro.observe(win);
+}
+document.getElementById('widthRange').addEventListener('input',e=>{
+  const v=+e.target.value;
+  document.getElementById('widthLabel').textContent=v+'px';
+  const win=document.getElementById('win'); if(win)win.style.width=v+'px';
+});
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-page],[data-state],[data-content],[data-act]'); if(!b)return;
+  if(b.dataset.page){cur.page=b.dataset.page;render();return}
+  if(b.dataset.state){cur.state=b.dataset.state;render();return}
+  if(b.dataset.content){cur.content=b.dataset.content;render();return}
+  const a=b.dataset.act;
+  if(a==='retry'){cur.state='loading';render();setTimeout(()=>{cur.state='normal';render()},1000);return}
+  if(a==='pick'){cur.page='result';cur.state='normal';render();return}
+  if(a==='probe'){cur.state='loading';render();setTimeout(()=>{cur.state='normal';render()},900)}
+});
+render();
+</script>
+</body>
+</html>

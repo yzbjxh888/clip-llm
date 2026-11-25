@@ -52,8 +52,9 @@
     "vision_enabled": true,
     "asset_ttl_days": 7,
     "auto_recognize_in_menu": false,
+    "clipboard_popup_max_mb": 2,
     "max_bytes": 8388608,
-    "auto_continue": true
+    "auto_continue": false
   },
   "image_text_conflict": "image_only",
   "modality_window_ms": 300,

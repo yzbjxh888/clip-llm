@@ -124,7 +124,8 @@ class StudioApp(QObject):
         self.window.query_submitted.connect(self.on_query_submitted)
         self.window.new_tab_requested.connect(self.on_new_tab)
         self.window.settings_requested.connect(self.open_settings)
-        self.window.vision_image_requested.connect(self.on_vision)
+        self.window.vision_image_requested.connect(
+            lambda: self.on_vision(source="screenshot"))
         self.window.open_input_requested.connect(self.open_input)
         # 独立输入进程开着时，Esc 归那个窗口，主窗口不响应
         self.window.set_input_activity_check(self.input_bridge.has_active)
@@ -152,7 +153,8 @@ class StudioApp(QObject):
             self.tray = QSystemTrayIcon(self._tray_icon(), self)
             menu = QMenu()
             menu.addAction("⚙ 设置 (F3)", self.open_settings)
-            menu.addAction("🖼 截图 / 图片查询（先选模板）", self.on_vision)
+            menu.addAction("🖼 截图 / 图片查询（先选模板）",
+                           lambda: self.on_vision(source="screenshot"))
             menu.addAction("显示窗口", self.show_window)
             menu.addSeparator()
             menu.addAction("退出", self.shutdown)
@@ -219,7 +221,18 @@ class StudioApp(QObject):
             return
         tab._studio_connected = True
         tab.request_generation = getattr(tab, "request_generation", 0)
-        tab.intent_selected.connect(lambda data, t=tab: self.on_intent(t, data))
+
+        def _on_tab_intent(data, t=tab):
+            env = getattr(t, "env", None)
+            self._diag(
+                "intent-selected",
+                source=str(getattr(env, "source", "-") or "-"),
+                assets=len(getattr(env, "assets", ()) or ()),
+                intent=str(data.get("intent_id") or "-"),
+                invalidated=bool(getattr(t, "invalidated", False)))
+            self.on_intent(t, data)
+
+        tab.intent_selected.connect(_on_tab_intent)
         tab.domain_changed.connect(lambda did, t=tab: self.on_domain(t, did))
         tab.category_changed.connect(
             lambda cid, t=tab: self.on_category(t, cid))
@@ -227,7 +240,8 @@ class StudioApp(QObject):
         tab.search_requested.connect(self.on_search)
         tab.settings_requested.connect(self.open_settings)
         tab.copy_query_requested.connect(self.on_copy_query)
-        tab.vision_image_requested.connect(self.on_vision)
+        tab.vision_image_requested.connect(
+            lambda: self.on_vision(source="screenshot"))
         tab.dismiss_requested.connect(self.window._on_dismiss)
         tab.ime_requested.connect(self.open_free_input)
         tab.self_copy_requested.connect(self.clip_monitor.suppress_text)
@@ -252,6 +266,14 @@ class StudioApp(QObject):
               f"geometry={window.geometry()}", flush=True)
 
     def start(self) -> None:
+        # 上次退出前没被消费的 vision.cmd（全局键 / 崩溃残留）会在首次
+        # 轮询时触发一次系统截图框。启动时先清掉，避免「一开就弹截图」。
+        stale = self.ipc_dir / "vision.cmd"
+        if stale.exists():
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError:
+                self._diag("ipc", reason="stale-unlink-failed")
         self.ipc_timer.start()
         self.window.show_without_focus()
 
@@ -265,25 +287,40 @@ class StudioApp(QObject):
             # 删不掉就别执行：否则每 500ms 都会再触发一次系统截图。
             self._diag("ipc", reason="unlink-failed")
             return
-        self.on_vision()
+        self.on_vision(source="screenshot")
 
     def _on_clipboard_text(self, text: str) -> None:
         if self._alive and not self._paused:
             self.process_text(text, source="clipboard")
 
     def _on_clipboard_image(self) -> None:
-        """截图 / 复制图片 → 和文本一样弹出初判窗口（不自动识别）。
+        """剪贴板出现图片 → 和文本一样弹出初判窗口（不自动识别）。
 
-        截图本身是用户主动动作，弹一次初判窗是期望行为；真正决定「要不要
-        识别、用哪套模板」的是窗口里的选择。总开关 ``image.vision_enabled``
-        关闭后这里直接返回，不弹窗也不发请求。
+        Win+Shift+S 等截图工具也是把图放进剪贴板，因此这条入口同样弹窗；
+        但它只读剪贴板，绝不触发系统截图，避免和手动截图入口互相顶替。
+        总开关 ``image.vision_enabled`` 关闭后直接返回。
         """
         if not (self._alive and not self._paused):
             return
         if not vision_enabled(self.settings):
             self._diag("vision-skip", reason="image.vision_enabled=false")
             return
-        self.on_vision()
+        # 大图往往是整页截图 / 导出图，用户只是想留在剪贴板，不希望弹窗。
+        # 0 表示不限制；默认 2 MB 来自 image.clipboard_popup_max_mb。
+        limit_mb = int((self.settings.get("image", {}) or {}).get(
+            "clipboard_popup_max_mb", 2))
+        pending = getattr(self.clip_monitor, "last_image", None)
+        if limit_mb > 0 and pending and len(pending[0] or b"") > limit_mb * 1024 * 1024:
+            self._diag("vision-skip", reason="clipboard-image-too-large",
+                       kb=len(pending[0] or b"") // 1024, limit_mb=limit_mb)
+            self._notice(
+                "大图未自动弹出",
+                f"这张图约 {len(pending[0]) // 1024 // 1024} MB，超过 "
+                f"{limit_mb} MB，按设置留在剪贴板、不弹初判。"
+                "要用它查询就点顶栏图片按钮或按 Ctrl+Alt+S；"
+                "想让大图也自动弹窗，到「设置 → 模型与图片」调大上限或设为不限制。")
+            return
+        self.on_vision(source="clipboard")
 
     # -- 子窗口反馈 --------------------------------------------------------
     def _child_opened(self) -> None:
@@ -518,7 +555,8 @@ class StudioApp(QObject):
                 classification=(tab.suggestion.classification
                                 if tab.suggestion else None))
             tab.set_context(env, policy, s,
-                            build_menu(s, self.settings, self.state.prefs))
+                            build_menu(s, self.settings, self.state.prefs),
+                            fresh=False)
         except Exception:
             self.state.errors.append(traceback.format_exc(limit=3))
 
@@ -529,7 +567,8 @@ class StudioApp(QObject):
                 return
             menu = build_menu(tab.suggestion, self.settings,
                               self.state.prefs, category_id=category_id)
-            tab.set_context(tab.env, tab.policy, tab.suggestion, menu)
+            tab.set_context(tab.env, tab.policy, tab.suggestion, menu,
+                            fresh=False)
             self._diag("category", value=category_id)
         except Exception as exc:
             self.state.errors.append(traceback.format_exc(limit=3))
@@ -556,6 +595,8 @@ class StudioApp(QObject):
                 chat_history = None
                 system_override = ""
             if getattr(tab, "invalidated", False):
+                # BLOCK 全程静默是既有约定（见 test_block_invalidates_stale_tab）：
+                # 拦截时已提示过，这里再点按钮不再触碰窗口。
                 self._diag("reject-invalidated", gen=tab.request_generation)
                 return
             # 硬否决统一防线：自由输入 / Ctrl+R / 旧标签残留 / 领域切换 /
@@ -567,6 +608,9 @@ class StudioApp(QObject):
                 tab.invalidated = True
                 self._diag("reject-blocked", gen=tab.request_generation,
                            reasons=",".join(policy.block_reasons) or "-")
+                self._notice("查询被拦截",
+                             "命中规则：" + "、".join(policy.block_reasons),
+                             tab=tab)
                 return
             # 两级策略：BLOCK 已在上面静默拒绝，走到这里就是 ALLOW，
             # 不存在「二次确认」这类会额外弹窗的中间态。
@@ -636,7 +680,7 @@ class StudioApp(QObject):
             tab._followup_pending = bool(followup)
             font_size = int(self.settings.get("desktop_font_size", 14))
             dark = bool(self.settings.get("desktop_dark_theme", False))
-            tab.show_loading(content_text, hint="正在请求模型..")
+            tab.show_pending("正在生成解释…")
             # 捕获网关快照：key 与实际请求必须来自同一份配置。热重载会整体
             # 替换 self.gateway，旧请求若读到新模型会把结果缓存到旧键下。
             gw = self.gateway
@@ -859,19 +903,17 @@ class StudioApp(QObject):
         return digest.hexdigest()
 
     def _fresh_clipboard_image(self, found):
-        """剪贴板图是否为「新图」。
+        """校验剪贴板图可用（只检查格式与大小，不按内容拒绝）。
 
-        取图后记账：与之前查询过的图相同就返回 None（当作没有新图）。
-        截图工具常把截图写回剪贴板，直接读剪贴板会永远读到同一张，
-        表现为「查不同公式，返回的还是上次那个」。
+        早先按「最近 8 张」摘要拦截，本意是防截图工具把同一张图写回
+        剪贴板造成死循环；但两条取图路径拆分后已无此问题，反而让用户
+        「重新复制同一张图再查一次」被静默吞掉。这里只做基本校验。
         """
         if found is None:
             return None
-        digest = self._image_identity(found[0])
-        if digest in self._used_image_digests:
-            self._diag("vision-skip-stale", bytes=len(found[0]))
+        if not found[0]:
+            self._diag("vision-skip-empty", reason="clipboard-empty-image")
             return None
-        self._mark_image_used(digest)
         return found
 
     def _mark_image_used(self, digest: str) -> None:
@@ -881,34 +923,41 @@ class StudioApp(QObject):
         self._used_image_digests.append(digest)
         del self._used_image_digests[:-8]
 
-    def on_vision(self) -> None:
-        """截图/复制图片 → 建图片信封 → 出菜单；识别在用户选模板后才发生。"""
+    def on_vision(self, source: str = "clipboard") -> None:
+        """截图/复制图片 → 建图片信封 → 出菜单；识别在用户选模板后才发生。
+
+        两条取图路径互不兜底：``screenshot`` 只走系统截图（不读剪贴板），
+        ``clipboard`` 只读剪贴板（不弹截图框）。Win+Shift+S 的截图本来就在
+        剪贴板里，因此走 clipboard 分支，不会被上一次复制的图片顶掉。
+        """
         try:
-            # 从托盘菜单触发时窗口可能已隐藏，需要主动提到最前
-            self.window.show_without_focus(bring_to_front=True)
+            # 置顶交给 _present_envelope 统一做一次：这里再调一次会让
+            # 剪贴板图片 / 截图都二次弹到最前，表现为「频繁弹窗」。
             if not vision_enabled(self.settings):
                 self._notice("图片识别已关闭",
                              "到「设置 → 模型」勾选「启用图片识别」后再试。")
                 return
             max_bytes = int(self.settings.get("image", {}).get(
                 "max_bytes", 8 * 1024 * 1024))
-            found = self.clip_monitor.take_image()
-            origin = "剪贴板图片"
-            if found is None:
-                found = read_clipboard_image(max_bytes)   # 外部命令兜底
-            found = self._fresh_clipboard_image(found)
-            if found is None:
+            if source == "clipboard":
+                found = self.clip_monitor.take_image()
+                origin = "剪贴板图片"
+                if found is None:
+                    found = read_clipboard_image(max_bytes)
+                found = self._fresh_clipboard_image(found)
+                if found is None:
+                    self._diag("vision-skip", reason="clipboard-no-new-image")
+                    return                    # 同一张图不重复打扰
+            else:
                 tab = self.window.current_tab()
-                tab.show_loading("屏幕截图", hint="正在请求截图..")
+                tab.show_pending("正在等待屏幕截图…")
                 QApplication.processEvents()
                 found = capture_screenshot(max_bytes)
                 origin = "屏幕截图"
-                if found is not None:
-                    self._mark_image_used(self._image_identity(found[0]))
             if found is None:
                 self._notice("截图未完成",
                              "没有拿到截图（可能取消了选择，或桌面截图界面未响应）。"
-                             "也可以先复制图片，再点顶栏的图片按钮重试。")
+                             "也可以按 Ctrl+Alt+S 重新截图。")
                 return
 
             image_bytes, mime = found
@@ -918,6 +967,8 @@ class StudioApp(QObject):
                 self._notice("图片不可用", str(exc))
                 return
             self._remember_asset(asset, image_bytes, mime)
+            # 资产真正可用后才记账，失败的图不该被永久判为「旧图」
+            self._mark_image_used(self._image_identity(image_bytes))
 
             # 新图 = 新一屏：旧结果不留在同一张卡片下面
             self.window.current_tab().begin_new_session()
@@ -966,6 +1017,9 @@ class StudioApp(QObject):
             tab = self.window.current_tab()
             tab.invalidated = True
             tab.last_selection = None
+            self._notice("这张图没有通过检查",
+                         "命中拦截规则（" + "、".join(policy.block_reasons)
+                         + "），本次图片查询已停止。", tab=tab)
             return
         suggestion = suggest(env, policy, self.settings)
         menu = build_menu(suggestion, self.settings, self.state.prefs)
@@ -981,6 +1035,8 @@ class StudioApp(QObject):
         self.window.query_edit.clear()
         self.state.stats["tabs"] = self.window.tabs.count()
         self.window.show_without_focus(bring_to_front=True)
+        # 图片初判需要用户再点一次菜单，置顶窗口留长一点（进窗后自动保持）
+        self.window.extend_flash(1500)
 
     def _start_vision(self, tab, env, route_id: str, extra: str,
                       intent=None, mode: str = "instruction") -> None:
@@ -1017,7 +1073,7 @@ class StudioApp(QObject):
                                 + (f"；附加要求：{extra.strip()}"
                                    if extra.strip() else ""))
         tab._pending_system = VISION_FOLLOWUP_SYSTEM
-        tab.show_loading(f"图片 · {label}", hint="正在识别图片..")
+        tab.show_pending(f"正在识别图片：{label}…")
         self._diag("vision-start", intent=intent_id, chars=len(prompt),
                    asset=str(getattr(env.assets[0], "sha256", "") or "")[:8],
                    gen=generation)

@@ -28,7 +28,9 @@ from .config import (
     DEFAULT_HOTKEYS, HOTKEY_LABELS, load_legacy, save_config,
 )
 from .theme_tokens import (
-    QSS_SCROLL_AREA, TYPO_BODY_MD, TYPO_BODY_SM, TYPO_HEADLINE_MD,
+    QSS_SCROLL_AREA, TYPO_BODY_MD, TYPO_BODY_SM, TYPO_HEADLINE_LG,
+    TYPO_HEADLINE_MD, TYPO_LABEL_SM, BORDER_WIDTH,
+    SPACING_SM, SPACING_MD, SPACING_LG, SPACING_XS, RADIUS_DEFAULT,
     build_qss, tokens,
 )
 
@@ -55,12 +57,33 @@ def settings_qss(dark: bool) -> str:
     t = tokens(dark)
     return f"""
 QDialog, QDialog * {{ font-size:{TYPO_BODY_MD[0]}px; }}
-QLabel#section {{ color:{t['primary']}; font-size:{TYPO_HEADLINE_MD[0]}px;
-  font-weight:bold; padding-top:4px; }}
+/* 设置页同样是一块连续面板：分区靠字阶 + 留白，不靠描边 */
+QLabel#section {{ color:{t['text']}; font-size:{TYPO_HEADLINE_LG[0]}px;
+  font-weight:600; padding-top:{SPACING_SM}px; padding-bottom:{SPACING_XS}px; }}
 QLabel#sectionHint {{ color:{t['text_variant']};
-  font-size:{TYPO_BODY_SM[0]}px; }}
+  font-size:{TYPO_BODY_SM[0]}px; padding-bottom:{SPACING_SM}px; }}
 QLabel#statusHint {{ color:{t['error']}; font-size:{TYPO_BODY_SM[0]}px; }}
-QTabBar::tab {{ font-size:{TYPO_BODY_SM[0]}px; }}
+QTabBar::tab {{ font-size:{TYPO_BODY_SM[0]}px; padding:{SPACING_SM}px {SPACING_MD}px; }}
+/* 底部按钮：去掉系统自带的绿勾 / 红叉图标，统一成无图标文字按钮 */
+QDialogButtonBox QPushButton {{ background:transparent; border:none;
+  color:{t['text']}; padding:{SPACING_SM}px {SPACING_LG}px;
+  min-height:32px; }}
+QDialogButtonBox QPushButton:hover {{ background:{t['chip']};
+  border-radius:{RADIUS_DEFAULT}px; }}
+QDialogButtonBox QPushButton:default {{ font-weight:bold; }}
+/* 表格 / 树：去掉网格线与交替行色，行间用极淡分隔，保持一体感 */
+QTreeWidget, QTableWidget, QListWidget {{ background:transparent;
+  border:none; outline:none; }}
+QHeaderView::section {{ background:transparent; border:none;
+  border-bottom:{BORDER_WIDTH}px solid {t['outline']};
+  color:{t['text_variant']}; font-size:{TYPO_LABEL_SM[0]}px;
+  padding:{SPACING_XS}px {SPACING_SM}px; }}
+QTreeWidget::item, QTableWidget::item, QListWidget::item {{
+  border:none; padding:{SPACING_XS}px {SPACING_SM}px; }}
+QTreeWidget::item:hover, QTableWidget::item:hover, QListWidget::item:hover {{
+  background:{t['chip']}; }}
+QTreeWidget::item:selected, QTableWidget::item:selected, QListWidget::item:selected {{
+  background:{t['chip']}; color:{t['text']}; }}
 QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {{
   background:{t['background']};
   }}
@@ -708,6 +731,9 @@ class SettingsDialog(QDialog):
     def _set_auto_continue(self, value: bool) -> None:
         self.data.setdefault("image", {})["auto_continue"] = bool(value)
 
+    def _set_popup_max_mb(self, value: int) -> None:
+        self.data.setdefault("image", {})["clipboard_popup_max_mb"] = int(value)
+
     def _load_route_prompt(self, _index: int) -> None:
         route_id = self.route_combo.currentData()
         if not route_id:
@@ -1005,12 +1031,19 @@ class SettingsDialog(QDialog):
         self.vision_enabled_check.toggled.connect(self._set_vision_enabled)
         form.addRow(self.vision_enabled_check)
         self.auto_continue_check = QCheckBox(
-            "识别出的文字自动按初判结果继续解释（图片只点一次；"
-            "关掉则先看识别结果，再手动选模板）")
+            "识别后自动用默认方式再解释一遍（默认关：先看这次识别的结果，"
+            "要不要继续由你决定；开了则一次点击走完）")
         self.auto_continue_check.setChecked(
-            bool((self.data.get("image") or {}).get("auto_continue", True)))
+            bool((self.data.get("image") or {}).get("auto_continue", False)))
         self.auto_continue_check.toggled.connect(self._set_auto_continue)
         form.addRow(self.auto_continue_check)
+        self.popup_max_mb_spin = QSpinBox()
+        self.popup_max_mb_spin.setRange(0, 64)
+        self.popup_max_mb_spin.setSpecialValueText("不限制")
+        self.popup_max_mb_spin.setValue(int(
+            (self.data.get("image") or {}).get("clipboard_popup_max_mb", 2)))
+        self.popup_max_mb_spin.valueChanged.connect(self._set_popup_max_mb)
+        form.addRow("剪贴板图片超过此大小不弹窗（MB）", self.popup_max_mb_spin)
         self.max_tokens_spin = QSpinBox()
         self.max_tokens_spin.setRange(256, 32768)
         self.max_tokens_spin.setValue(int(self.data.get("desktop_max_tokens", 2048)))
@@ -1019,7 +1052,9 @@ class SettingsDialog(QDialog):
         form.addRow("上下文长度 max_tokens", self.max_tokens_spin)
         form.addRow(self._note(
             "地址、密钥、模型名称任一项留空，就不会发送网络请求，只显示本地预览。"
-            "上下文长度限制单次回答的长短。"))
+            "上下文长度限制单次回答的长短。剪贴板图片超过设定大小时只保留在剪贴板，"
+            "不弹初判窗口（默认 2 MB，设为「不限制」则总是弹窗）；"
+            "手动按 Ctrl+Alt+S 截图不受此限制。"))
         return w
 
     # -- 拦截 --------------------------------------------------------------
@@ -1035,7 +1070,7 @@ class SettingsDialog(QDialog):
         self.policy_tree.setColumnCount(3)
         self.policy_tree.setHeaderLabels(["规则", "说明", "拦截"])
         self.policy_tree.setRootIsDecorated(False)
-        self.policy_tree.setAlternatingRowColors(True)
+        self.policy_tree.setAlternatingRowColors(False)   # 一体化：不要斑马纹
         self.policy_tree.setUniformRowHeights(True)
         header = self.policy_tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)

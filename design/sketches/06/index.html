@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>设计方向 06 — 极简卡片语言</title>
+<style>
+  :root{
+    --bg:#eef0f3; --card:#ffffff; --ink:#18191c; --ink-2:#8d9098;
+    --line:#f0f1f4; --brand:#f4663b; --brand-soft:#fff1ec;
+    --blue:#4d7cfe; --violet:#7b61ff; --amber:#f5a623;
+    --shadow:0 10px 40px rgba(24,25,28,.06), 0 2px 8px rgba(24,25,28,.04);
+    --r:20px; --r-sm:12px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);
+    font-family:"Noto Sans CJK SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    padding:32px 20px 80px;display:flex;flex-direction:column;align-items:center;gap:28px}
+  .note{max-width:760px;text-align:center;color:var(--ink-2);font-size:13px;line-height:1.7}
+  .note b{color:var(--ink)}
+  .switch{display:flex;gap:6px;background:#fff;padding:5px;border-radius:999px;box-shadow:var(--shadow)}
+  .switch button{border:0;background:transparent;color:var(--ink-2);font-size:13px;
+    padding:9px 20px;border-radius:999px;cursor:pointer;font-family:inherit}
+  .switch button.on{background:var(--brand-soft);color:var(--brand);font-weight:600}
+  .stage{display:none;width:760px;max-width:100%;background:var(--card);
+    border-radius:var(--r);box-shadow:var(--shadow);padding:40px 44px 36px}
+  .stage.on{display:block}
+  .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:34px}
+  .back{width:34px;height:34px;border-radius:50%;background:#f5f6f8;
+    display:flex;align-items:center;justify-content:center;color:var(--ink);font-size:18px}
+  .more{color:var(--ink-2);font-size:20px;letter-spacing:2px}
+  .hero{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:30px}
+  .hero h1{font-size:38px;line-height:1.12;font-weight:750;letter-spacing:-.02em}
+  .hero h1 span{display:block;color:var(--ink-2);font-weight:400}
+  .hero .date{text-align:right;color:var(--ink-2);font-size:12px;line-height:1.4}
+  .hero .date b{display:block;color:var(--ink);font-size:22px;font-weight:650}
+  .seg{display:flex;gap:4px;background:#f5f6f8;border-radius:999px;padding:4px;margin-bottom:30px}
+  .seg span{padding:9px 22px;border-radius:999px;font-size:13px;color:var(--ink-2)}
+  .seg span.on{background:#fff;color:var(--ink);font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+  .row{display:flex;gap:18px}
+  .ring{width:150px;height:150px;border-radius:50%;flex:none;
+    background:conic-gradient(var(--blue) 0 28%,var(--violet) 28% 81%,var(--amber) 81% 100%);
+    display:flex;align-items:center;justify-content:center;position:relative}
+  .ring::after{content:"";position:absolute;inset:22px;border-radius:50%;background:#fff}
+  .ring i{position:relative;z-index:1;font-style:normal;font-size:12px;color:var(--ink-2)}
+  .legend{flex:1;display:flex;flex-direction:column;justify-content:center;gap:14px}
+  .legend div{display:flex;align-items:center;gap:10px;font-size:13px}
+  .legend em{width:9px;height:9px;border-radius:50%;font-style:normal}
+  .legend b{margin-left:auto;font-size:13px}
+  .stats{display:flex;gap:12px;margin-top:28px}
+  .stat{flex:1;background:#fafbfc;border-radius:var(--r-sm);padding:18px 16px;text-align:center}
+  .stat .dot{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;
+    justify-content:center;margin:0 auto 12px;font-size:15px}
+  .stat b{display:block;font-size:20px;font-weight:700}
+  .stat small{color:var(--ink-2);font-size:12px}
+  .cta{margin-top:30px;width:100%;background:var(--brand);color:#fff;border:0;
+    border-radius:var(--r-sm);padding:17px;font-size:15px;font-weight:600;
+    display:flex;align-items:center;justify-content:center;gap:10px}
+  /* 结果页 */
+  .result-q{background:#f5f6f8;border-radius:var(--r-sm);padding:14px 18px;
+    font-size:14px;color:var(--ink-2);margin-bottom:22px}
+  .result-q b{color:var(--ink)}
+  .result-body{font-size:15px;line-height:1.9;color:#33363c}
+  .result-body h3{font-size:17px;margin:22px 0 10px}
+  .result-body p{margin-bottom:12px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+  .chip{background:var(--brand-soft);color:var(--brand);border-radius:999px;
+    padding:7px 15px;font-size:12px}
+  .mini-tags{display:flex;gap:8px;margin-top:24px}
+  .mini-tags span{background:#f5f6f8;color:var(--ink-2);border-radius:999px;
+    padding:8px 16px;font-size:12px}
+  /* 设置页 */
+  .settings .hero{margin-bottom:24px}
+  .set-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card{background:#fafbfc;border-radius:var(--r-sm);padding:18px 20px;
+    display:flex;align-items:center;gap:16px}
+  .card .t{flex:1}
+  .card .t b{display:block;font-size:14px;font-weight:600}
+  .card .t small{display:block;color:var(--ink-2);font-size:12px;margin-top:4px}
+  .toggle{width:42px;height:24px;border-radius:999px;background:var(--brand);
+    position:relative;flex:none}
+  .toggle::after{content:"";position:absolute;right:3px;top:3px;width:18px;height:18px;
+    border-radius:50%;background:#fff}
+  .toggle.off{background:#d8dbe0}
+  .toggle.off::after{right:auto;left:3px}
+  .slider{width:120px;height:4px;border-radius:4px;background:#e4e6ea;position:relative;flex:none}
+  .slider::after{content:"";position:absolute;left:62%;top:-6px;width:16px;height:16px;
+    border-radius:50%;background:var(--brand)}
+  .full{grid-column:1/-1}
+  .textfield{background:#fff;border-radius:10px;padding:12px 14px;font-size:13px;
+    color:var(--ink-2);margin-top:8px}
+  .foot{margin-top:28px;display:flex;align-items:center;gap:14px}
+  .foot .hint{flex:1;color:var(--ink-2);font-size:12px}
+  .foot .cta{margin:0;width:auto;padding:14px 34px}
+  .ghost{background:transparent;border:0;color:var(--ink-2);font-size:13px;cursor:pointer}
+  .legend-title{font-size:12px;color:var(--ink-2);margin:26px 0 12px}
+</style>
+</head>
+<body>
+  <div class="note">
+    <b>设计方向 06 — 极简卡片语言</b><br>
+    参考图的布局语言（大标题 / 胶囊分段 / 留白卡片 / 单一主按钮 / 无表格线）迁移到桌面端。
+    三屏可切换查看。配色为可选项，见下方说明。
+  </div>
+
+  <div class="switch">
+    <button class="on" data-t="detect">初判页</button>
+    <button data-t="result">结果页</button>
+    <button data-t="settings">设置页</button>
+  </div>
+
+  <!-- 初判页 -->
+  <section class="stage on" id="detect">
+    <div class="top"><div class="back">‹</div><div class="more">···</div></div>
+    <div class="hero">
+      <h1>NaCl<span>氯化钠 · 化学物质</span></h1>
+      <div class="date">HIGH<b>94%</b></div>
+    </div>
+    <div class="seg"><span class="on">推荐方式</span><span>其他视角</span><span>字段</span></div>
+    <div class="stats" style="margin-top:0;flex-direction:column;gap:12px">
+      <div class="card" style="background:#fafbfc">
+        <div class="t"><b>综合解释</b><small>结构化字段 · 含读法、性质与用途</small></div>
+        <span style="color:var(--brand)">→</span>
+      </div>
+      <div class="card" style="background:#fafbfc">
+        <div class="t"><b>这个式子该怎么念</b><small>逐字符 + 整体读法</small></div>
+        <span style="color:var(--brand)">→</span>
+      </div>
+      <div class="card" style="background:#fafbfc">
+        <div class="t"><b>和相近物质怎么区分</b><small>横向对比 · 易混点</small></div>
+        <span style="color:var(--brand)">→</span>
+      </div>
+    </div>
+    <button class="cta">开始查询 <span>→</span></button>
+  </section>
+
+  <!-- 结果页 -->
+  <section class="stage" id="result">
+    <div class="top"><div class="back">‹</div><div class="more">···</div></div>
+    <div class="hero">
+      <h1>NaCl<span>解释结果</span></h1>
+      <div class="date">已保存<b>✓</b></div>
+    </div>
+    <div class="result-q"><b>你问的：</b> NaCl 的读法、性质和常见用途是什么？</div>
+    <div class="result-body">
+      <h3>一句话结论</h3>
+      <p>氯化钠是离子化合物，常温下为白色晶体，易溶于水，是食盐的主要成分。</p>
+      <div class="chips"><span class="chip">离子键</span><span class="chip">易溶于水</span><span class="chip">食盐</span></div>
+      <h3>关键性质</h3>
+      <p>熔点 801°C，水溶液呈中性，导电性来自自由移动的钠离子与氯离子。</p>
+    </div>
+    <div class="mini-tags"><span>追问细节</span><span>换个角度</span><span>复制</span></div>
+    <button class="cta">针对这次结果继续追问 <span>→</span></button>
+  </section>
+
+  <!-- 设置页 -->
+  <section class="stage settings" id="settings">
+    <div class="hero">
+      <h1>设置<span>外观与行为</span></h1>
+      <div class="date">9 → 4<b>页</b></div>
+    </div>
+    <div class="seg"><span class="on">外观</span><span>查询</span><span>模型</span><span>高级</span></div>
+    <div class="legend-title">显示</div>
+    <div class="set-grid">
+      <div class="card"><div class="t"><b>深色主题</b><small>跟随系统或手动切换</small></div><div class="toggle off"></div></div>
+      <div class="card"><div class="t"><b>结果字号</b><small>正文阅读大小</small></div><div class="slider"></div></div>
+      <div class="card full"><div class="t"><b>新查询自动开新标签</b><small>关闭则复用当前标签</small></div><div class="toggle"></div></div>
+    </div>
+    <div class="legend-title">模型</div>
+    <div class="set-grid">
+      <div class="card full"><div class="t"><b>文本模型</b><small>API 地址与密钥</small></div>
+        <div class="textfield">https://api.example.com/v1/chat</div></div>
+      <div class="card"><div class="t"><b>图片自动弹窗上限</b><small>2 MB</small></div><div class="slider"></div></div>
+      <div class="card"><div class="t"><b>每日请求上限</b><small>0 为不限</small></div><div class="slider"></div></div>
+    </div>
+    <div class="foot">
+      <span class="hint">改动会立即生效</span>
+      <button class="ghost">恢复默认</button>
+      <button class="cta">完成 <span>✓</span></button>
+    </div>
+  </section>
+
+<script>
+  document.querySelectorAll('.switch button').forEach(b=>{
+    b.onclick=()=>{
+      document.querySelectorAll('.switch button').forEach(x=>x.classList.remove('on'));
+      document.querySelectorAll('.stage').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on');
+      document.getElementById(b.dataset.t).classList.add('on');
+    };
+  });
+</script>
+</body>
+</html>

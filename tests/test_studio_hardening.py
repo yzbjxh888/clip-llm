@@ -11,7 +11,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
@@ -1964,7 +1964,7 @@ class TestImageIdentity(unittest.TestCase):
 
 
 class TestStaleClipboardImage(unittest.TestCase):
-    """剪贴板里还是上次那张图时必须去截新的，不能把同一张再查一遍。"""
+    """重新复制同一张图也应能再查一次；只有空图/无效图才拒绝。"""
 
     def setUp(self):
         self.app = make_app()
@@ -1972,17 +1972,117 @@ class TestStaleClipboardImage(unittest.TestCase):
     def tearDown(self):
         stop(self.app)
 
-    def test_same_image_twice_only_first_counts(self):
+    def test_same_image_can_be_queried_again(self):
         clip = (b"\x89PNG-A", "image/png")
         other = (b"\x89PNG-B", "image/png")
         self.assertIsNotNone(self.app._fresh_clipboard_image(clip))
-        self.assertIsNone(self.app._fresh_clipboard_image(clip))   # 旧图
+        # 用过之后再复制同一张，仍算有效输入（这正是「复制图片查不了」的修复）
+        self.app._mark_image_used(self.app._image_identity(clip[0]))
+        self.assertIsNotNone(self.app._fresh_clipboard_image(clip))
         self.assertIsNotNone(self.app._fresh_clipboard_image(other))
-        # 用过别的图之后，最早那张也不能被重新当成新图
-        self.assertIsNone(self.app._fresh_clipboard_image(clip))
+
+    def test_empty_image_is_rejected(self):
+        self.assertIsNone(self.app._fresh_clipboard_image((b"", "image/png")))
 
     def test_none_stays_none(self):
         self.assertIsNone(self.app._fresh_clipboard_image(None))
+
+    def test_monitor_dedups_burst_but_allows_recopy(self):
+        from PySide6.QtCore import QObject
+        from clipllm02.studio.clipboard_monitor import ClipboardMonitor
+        with patch("clipllm02.studio.clipboard_monitor.shutil.which",
+                   return_value=None):
+            monitor = ClipboardMonitor()
+        fired = []
+        monitor.image_found.connect(lambda: fired.append(1))
+        png = (b"\x89PNG" + b"IEND\xaeB`\x82")
+        monitor._accept_image(png, "image/png")
+        monitor.take_image()
+        monitor._accept_image(png, "image/png")   # 同一次的双通道上报
+        self.assertEqual(len(fired), 1)
+        monitor._last_image_at -= 2.0            # 隔一会儿重新复制同一张
+        monitor._accept_image(png, "image/png")
+        self.assertEqual(len(fired), 2)
+        monitor.stop()
+
+    def test_image_event_suppresses_trailing_text(self):
+        """同一次复制的图片+文本只出图片初判，尾随文本不得作废它。"""
+        from clipllm02.studio.clipboard_monitor import ClipboardMonitor
+        with patch("clipllm02.studio.clipboard_monitor.shutil.which",
+                   return_value=None):
+            monitor = ClipboardMonitor()
+        images, texts = [], []
+        monitor.image_found.connect(lambda: images.append(1))
+        monitor.text_found.connect(lambda t: texts.append(t))
+        monitor._accept_image(b"\x89PNG-IEND", "image/png")
+        monitor._emit_text("image.png")            # 同一次复制的附带文本
+        monitor._emit_text("https://example.com")  # Wayland 另一条 watch
+        self.assertEqual(len(images), 1)
+        self.assertEqual(texts, [])                # 全被吞，图片初判不被覆盖
+        monitor._last_image_at -= 2.0
+        monitor._emit_text("新的文本")              # 隔一会儿才是真复制
+        self.assertEqual(texts, ["新的文本"])
+        monitor.stop()
+
+
+class TestSessionDiscard(unittest.TestCase):
+    """新一轮查询必须彻底丢弃上一轮上下文，否则显示上一次的内容。"""
+
+    def setUp(self):
+        self.app = make_app()
+
+    def tearDown(self):
+        stop(self.app)
+
+    def test_new_input_discards_all_context(self):
+        tab = self.app.window.current_tab()
+        tab.chat_blocks = ["<p>上一轮文本结果</p>"]
+        tab.chat_history = [{"role": "user", "content": "上一轮问题"}]
+        tab.chat_system = "上一轮 system"
+        tab._pending_content = "上一轮正文"
+        tab._pending_system = "上一轮 system"
+        tab._followup_pending = True
+        tab._followup = {"question": "上一轮追问"}
+        tab.last_result_text = "上一轮结果"
+        tab.begin_new_session()
+        self.assertEqual(tab.chat_blocks, [])
+        self.assertEqual(tab.chat_history, [])
+        self.assertEqual(tab._pending_content, "")
+        self.assertEqual(tab._pending_system, "")
+        self.assertFalse(tab._followup_pending)
+        self.assertNotIn("_followup", tab.__dict__)
+        self.assertEqual(tab.last_result_text, "")
+
+    def test_new_session_clears_visible_old_html(self):
+        """清数据还必须清视图：否则点开结果页会先看到上一轮内容。"""
+        tab = self.app.window.current_tab()
+        tab.show_result("<p>上一轮遗留结果</p>", title="旧")
+        self.assertIn("上一轮遗留结果", tab.view.toPlainText())
+        tab.begin_new_session()
+        self.assertEqual(tab.view.toPlainText().strip(), "")
+        tab._goto_result()
+        tab.show_pending("正在生成解释…")
+        self.assertNotIn("上一轮遗留结果", tab.view.toPlainText())
+        self.assertIn("正在生成解释", tab.view.toPlainText())
+
+    def test_switch_domain_keeps_history(self):
+        """同一输入换领域 / 模板不是新会话，历史要留住。"""
+        from clipllm02 import UserSelection, build_request_prompt
+        tab = self.app.window.current_tab()
+        from clipllm02.models import InputEnvelope
+        import copy
+        env = InputEnvelope.for_text("NaCl", source="test")
+        from clipllm02.policy import preflight
+        from clipllm02.suggest import suggest, build_menu
+        policy = preflight(env, self.app.settings)
+        s = suggest(env, policy, self.app.settings)
+        menu = build_menu(s, self.app.settings, self.app.state.prefs)
+        tab.set_context(env, policy, s, menu)     # 先建立正常上下文
+        tab.chat_blocks = ["<p>本轮结果</p>"]
+        tab._pending_content = "本轮正文"
+        tab.set_context(env, policy, s, menu, fresh=False)
+        self.assertEqual(tab.chat_blocks, ["<p>本轮结果</p>"])
+        self.assertEqual(tab._pending_content, "本轮正文")
 
 
 class TestVisionFollowup(unittest.TestCase):
@@ -2277,8 +2377,8 @@ class TestVisionAutoContinue(unittest.TestCase):
         self.assertNotIn("image", intent.domains)
         self.assertEqual(intent.primary_route, "latex")
 
-    def test_ocr_flow_lands_on_result_without_second_menu(self):
-        """截图 → 选一次 → 结果：中间那次初判不能真的停下来等用户。"""
+    def test_ocr_flow_waits_for_user_choice(self):
+        """识别结果回到初判层：由用户决定用哪条文本方式继续解释。"""
         from types import SimpleNamespace
         from clipllm02.modality import MemoryAssetStore
 
@@ -2291,10 +2391,9 @@ class TestVisionAutoContinue(unittest.TestCase):
         result = SimpleNamespace(ok=True, text=r"\(E = mc^2\)")
         self.app._on_vision_done(
             (tab, result, "image.ocr", "提取图片中的文字", "auto"))
-        self.assertEqual(tab.stack.currentIndex(), 1)      # 结果层
+        self.assertEqual(tab.stack.currentIndex(), 0)      # 初判层，等用户选
         picked = (tab.last_selection or {}).get("intent_id")
-        self.assertIsNotNone(picked)
-        self.assertNotIn("image", self.app.settings.intent(picked).domains)
+        self.assertIsNone(picked)                          # 不替用户自动选
 
     def test_explicit_direct_show_wins_over_compat_default(self):
         """显式选「直接展示识别结果」不能被老载荷兼容逻辑改成二次查询。"""
@@ -2318,7 +2417,7 @@ class TestVisionAutoContinue(unittest.TestCase):
         self.assertEqual(self.app._pinned_intent("latex"), "math.legacy")
         self.assertIsNone(self.app._pinned_intent("no_such_route"))
 
-    def test_vision_done_passes_auto_continue(self):
+    def test_vision_done_does_not_auto_submit(self):
         from types import SimpleNamespace
 
         env = InputEnvelope.for_text("x", source="vision")
@@ -2327,7 +2426,7 @@ class TestVisionAutoContinue(unittest.TestCase):
         self.app.process_text = lambda text, **kw: seen.update(kw, text=text)
         result = SimpleNamespace(ok=True, text=r"\(E = mc^2\)")
         self.app._on_vision_done((tab, result, "image.ocr", "提取图片中的文字"))
-        self.assertTrue(seen.get("auto_submit"))
+        self.assertFalse(seen.get("auto_submit"))
         self.assertEqual(seen.get("source"), "vision")
 
     def test_vision_auto_does_not_pin_latex(self):
@@ -2350,6 +2449,75 @@ class TestFactoryCounts(unittest.TestCase):
         self.assertEqual(len(settings.routes), 11)
         self.assertEqual(len(settings.intents), 41)
         self.assertEqual(len(settings.policy.get("rules", {})), 14)
+
+
+class TestImageEntrySplit(unittest.TestCase):
+    """截图与复制图片走互不兜底的取图路径；拦截不再静默。
+
+    这些用例用轻量替身调用未绑定方法，不创建 Qt 窗口/剪贴板监听，
+    避免全量连跑时累积多个 QProcess 触发段错误。
+    """
+
+    @staticmethod
+    def _app():
+        from clipllm02 import load_defaults
+        app = MagicMock()
+        app.settings = load_defaults()
+        app._alive = True
+        app._paused = False
+        app._fresh_clipboard_image = lambda found: found
+        app._image_identity = lambda data: "digest"
+        return app
+
+    def test_clipboard_entry_never_screenshots(self):
+        from clipllm02.studio.app import StudioApp
+        app = self._app()
+        app.clip_monitor.take_image.return_value = None
+        with patch("clipllm02.studio.app.read_clipboard_image",
+                   return_value=None), \
+                patch("clipllm02.studio.app.capture_screenshot") as shot:
+            StudioApp.on_vision(app, source="clipboard")
+            shot.assert_not_called()
+
+    def test_screenshot_entry_never_reads_clipboard(self):
+        from clipllm02.studio.app import StudioApp
+        app = self._app()
+        with patch("clipllm02.studio.app.QApplication.processEvents"), \
+                patch("clipllm02.studio.app.capture_screenshot",
+                      return_value=None):
+            StudioApp.on_vision(app, source="screenshot")
+            app.clip_monitor.take_image.assert_not_called()
+
+    def test_blocked_image_presentation_is_visible(self):
+        from clipllm02.models import InputEnvelope
+        from clipllm02.studio.app import StudioApp
+        app = self._app()
+        env = InputEnvelope.for_text("一张图")
+        blocked = MagicMock()
+        blocked.allowed = False
+        blocked.block_reasons = ("secret",)
+        with patch("clipllm02.studio.app.preflight", return_value=blocked):
+            StudioApp._present_envelope(app, env)
+            app._notice.assert_called_once()
+
+    def test_auto_continue_defaults_off(self):
+        from clipllm02 import load_defaults
+        s = load_defaults()
+        self.assertFalse((s.get("image") or {}).get("auto_continue"))
+
+    def test_config_upgrade_turns_auto_continue_off(self):
+        import json
+        import tempfile
+        from clipllm02.studio.config import load_config
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "settings.json"
+            path.write_text(json.dumps({
+                "config_version": 7, "image": {"auto_continue": True}}),
+                encoding="utf-8")
+            with patch("clipllm02.studio.config.config_path",
+                       return_value=path):
+                s = load_config()
+            self.assertFalse(s.get("image")["auto_continue"])
 
 
 if __name__ == "__main__":

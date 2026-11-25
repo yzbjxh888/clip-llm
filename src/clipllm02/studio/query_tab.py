@@ -57,7 +57,7 @@ class ImeWatcher(QObject):
 
 def send_icon(size: int = 18, color: str | None = None) -> QIcon:
     """自绘纸飞机：无外框图标按钮用，不依赖系统图标主题。"""
-    painter_color = color or tokens()["on_primary"]
+    painter_color = color or tokens()["text"]
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
@@ -263,7 +263,7 @@ class QueryTab(QWidget):
         self.free_box = QFrame()
         self.free_box.setObjectName("freeCard")
         free_layout = QHBoxLayout(self.free_box)
-        free_layout.setContentsMargins(10, 9, 10, 9)
+        free_layout.setContentsMargins(0, 4, 0, 4)
         free_layout.setSpacing(7)
         self.free_edit = QLineEdit()
         self.free_edit.setObjectName("free")
@@ -311,7 +311,7 @@ class QueryTab(QWidget):
         self.followup_box = QFrame()
         self.followup_box.setObjectName("freeCard")
         follow_layout = QHBoxLayout(self.followup_box)
-        follow_layout.setContentsMargins(10, 9, 10, 9)
+        follow_layout.setContentsMargins(0, 4, 0, 4)   # 无白边留白，与背景同色
         follow_layout.setSpacing(7)
         self.followup_edit = QLineEdit()
         self.followup_edit.setObjectName("followup")
@@ -444,23 +444,41 @@ class QueryTab(QWidget):
 
     # -- 数据 --------------------------------------------------------------
     def begin_new_session(self) -> None:
-        """清掉上一轮对话，让新的等待卡片成为第一屏。"""
+        """彻底丢弃上一会话的全部状态，让新查询从干净的一屏开始。
+
+        早期只清了 chat_blocks / chat_history 等显示字段，漏掉了请求正文、
+        系统提示与追问标记。结果就是「图片 → 文本 → 再图片」时，新一轮
+        查询仍带着上一轮的 _pending_content / _pending_system，回包被当成
+        追问 append 到旧内容后面，显示成上一次的文本查询内容。
+        """
         self.chat_blocks = []
         self.chat_css = ""
         self._loading_block = ""
         self._chat_chars = 0
         self.chat_history = []
         self.chat_system = ""
+        self.last_result_text = ""
+        # 这几个是「上一轮请求是什么」的票据，必须一起丢弃
+        self._pending_content = ""
+        self._pending_system = ""
+        self._followup_pending = False
+        self.__dict__.pop("_followup", None)
+        # 只清数据不够：QTextBrowser 里还留着上一轮的 HTML。点开结果页时
+        # 会先看到旧内容，等新回包才被覆盖。这里立刻把视图一起清空。
+        self.view.clear()
 
     def set_context(self, env: InputEnvelope, policy: PolicyResult,
-                    suggestion: Suggestion, menu: MenuModel) -> None:
+                    suggestion: Suggestion, menu: MenuModel,
+                    *, fresh: bool = True) -> None:
         # 新上下文写入标签 = 该标签此前所有在途请求立即作废。
         # 无论新建标签还是复用当前标签，apply_context 都会走这里。
         self.request_generation += 1
-        # 新输入意味着新会话：上一轮对话与缓存段落全部作废
-        self.begin_new_session()
-        self.session_id = uuid4().hex[:10]
-        self.last_selection = None
+        # fresh=True 是真·新输入（复制/截图/文本查询）：丢弃上一轮上下文。
+        # fresh=False 是同一输入下换领域 / 换模板 / 刷新菜单：保留历史。
+        if fresh:
+            self.begin_new_session()
+            self.session_id = uuid4().hex[:10]
+            self.last_selection = None
         self.invalidated = False
         self.pending_confirmation = None
         self.env = env
@@ -473,7 +491,7 @@ class QueryTab(QWidget):
     def refresh_menu(self, env, policy, suggestion, menu) -> None:
         """设置保存后原地刷新初判层，保持当前所处的层（初判 / 结果）。"""
         layer = self.stack.currentIndex()
-        self.set_context(env, policy, suggestion, menu)
+        self.set_context(env, policy, suggestion, menu, fresh=False)
         if layer == 1:
             self._goto_result()
         else:
@@ -483,7 +501,7 @@ class QueryTab(QWidget):
         self._font_size = font_size
         self._dark = bool(dark)
         self.setStyleSheet(build_qss(self._dark))
-        icon_color = tokens(self._dark)["on_primary"]
+        icon_color = tokens(self._dark)["text"]
         for button in self.findChildren(QToolButton):
             if button.objectName() == "sendIcon":
                 button.setIcon(send_icon(18, color=icon_color))
@@ -746,6 +764,24 @@ class QueryTab(QWidget):
             bar.setValue(min(bar.maximum(), bar.value() + 56))
 
         QTimer.singleShot(0, settle)
+
+    def show_pending(self, hint: str = "") -> None:
+        """轻量等待提示：结果页内只加一行小字，不渲染整屏加载卡片。
+
+        状态栏已被移出可视区，单设 status 用户完全看不到，表现为「点击没反应」。
+        结果页里用一行内嵌文字给出反馈，既保留轻量，又能确认请求已发出。
+        """
+        tip = html.escape(hint or "正在处理…", quote=False)
+        if self.stack.currentIndex() == 1:
+            accent = html_theme(self._dark)["accent"]
+            self._loading_block = (
+                f"<div style='color:{accent};font-size:13px;margin:6px 0;'>"
+                f"{tip}</div>")
+            self._render_chat("bottom")
+        else:
+            self._loading_block = ""
+        self.status.setText(tip)
+        self.status.setVisible(True)
 
     def show_loading(self, text: str, hint: str = "") -> None:
         """等待卡片：只留一句短话，不堆说明。

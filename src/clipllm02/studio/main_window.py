@@ -28,7 +28,7 @@ STYLE = build_qss(False)
 
 def _draw_icon(kind: str, size: int = 18, color: str | None = None) -> QIcon:
     """自绘线条图标：不依赖系统图标主题，尺寸与颜色可控。"""
-    painter_color = color or tokens()["primary"]
+    painter_color = color or tokens()["text"]
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
@@ -156,6 +156,9 @@ class MainWindow(ResizableWindow):
         self.tabs.setTabsClosable(True)
         self.tabs.setMovable(True)
         self.tabs.setTabBarAutoHide(True)   # 单标签自动隐藏页签；多标签可点选切换
+        # 一体化：不显示那条带左右箭头的横向标签导航条。
+        # 多标签切换仍可用 Ctrl+Tab，关闭用各页内「关闭」/Esc，功能不丢。
+        self.tabs.tabBar().hide()
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self.tabs, 1)
@@ -338,7 +341,7 @@ class MainWindow(ResizableWindow):
         palette = self.palette()
         palette.setColor(QPalette.Window, QColor(tokens(self._dark)["background"]))
         self.setPalette(palette)
-        icon_color = tokens(self._dark)["primary"]
+        icon_color = tokens(self._dark)["text"]
         for button in self.findChildren(QToolButton):
             if button.objectName() == "barAction":
                 kind = str(button.property("icon_kind") or "find")

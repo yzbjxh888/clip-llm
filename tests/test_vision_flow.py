@@ -139,10 +139,10 @@ class TestModalityIsolation(unittest.TestCase):
 
 
 class TestAutoContinue(unittest.TestCase):
-    """图片识别回流：识别出的文字要能自动接上文本模板（一次点击走完）。"""
+    """图片识别回流：默认先看识别结果，用户再决定要不要继续解释。"""
 
-    def test_factory_default_is_on(self):
-        self.assertTrue(load_defaults().get("image", {}).get("auto_continue"))
+    def test_factory_default_is_off(self):
+        self.assertFalse(load_defaults().get("image", {}).get("auto_continue"))
 
     def test_ocr_text_gets_text_default_intent(self):
         settings = load_defaults()
