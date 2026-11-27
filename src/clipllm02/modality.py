@@ -18,6 +18,14 @@ IMAGE_MIMES = ("image/png", "image/jpeg", "image/webp")
 _EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 
 
+def input_kind_for(envelope: InputEnvelope) -> str:
+    """schema.json:input_kind —— text | image_screenshot 的唯一判定处。
+
+    图片/截图（含图文混合）按图片处理：跳过本地正则直接发送（FR-001/FR-002）。
+    """
+    return "image_screenshot" if envelope.assets else "text"
+
+
 def image_digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 

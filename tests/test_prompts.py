@@ -91,7 +91,7 @@ class TestComposePrompt(unittest.TestCase):
     def test_missing_section_is_skipped_with_warning(self):
         intent = replace(
             self.settings.intent("math.derive"),
-            includes=({"route_id": "general", "sections": ["no_such_section"]},),
+            includes=({"route_id": "通用解析", "sections": ["no_such_section"]},),
         )
         result = compose_prompt(intent, self.settings)
         self.assertTrue(any("缺少片段" in w for w in result.warnings))
@@ -107,17 +107,17 @@ class TestComposePrompt(unittest.TestCase):
 
     def test_cycle_is_rejected(self):
         settings = load_settings({"routes": {
-            "general": {"includes": [{"route_id": "en_word"}]},
-            "en_word": {"includes": [{"route_id": "general"}]},
+            "通用解析": {"includes": [{"route_id": "英语单词"}]},
+            "英语单词": {"includes": [{"route_id": "通用解析"}]},
         }})
         with self.assertRaises(ValueError) as ctx:
             compose_prompt(settings.intent("math.derive"), settings)
         self.assertIn("循环引用", str(ctx.exception))
 
     def test_composition_hash_is_stable_and_sensitive(self):
-        a = [{"route_id": "en_word", "sections": ["phonetic"]}]
-        b = [{"route_id": "en_word", "sections": ["phonetic"]},
-             {"route_id": "general", "sections": ["key_points"]}]
+        a = [{"route_id": "英语单词", "sections": ["phonetic"]}]
+        b = [{"route_id": "英语单词", "sections": ["phonetic"]},
+             {"route_id": "通用解析", "sections": ["key_points"]}]
         self.assertEqual(composition_hash(a), composition_hash(a))
         self.assertNotEqual(composition_hash(a), composition_hash(b))
 

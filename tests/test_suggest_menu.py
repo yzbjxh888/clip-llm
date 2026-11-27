@@ -69,7 +69,7 @@ class TestMenuBuilder(unittest.TestCase):
         self.assertTrue(menu.recommended)
         self.assertEqual(len(menu.recommended),
                          sum(1 for i in self.settings.intents
-                             if i.enabled and i.primary_route == "chem_substance"
+                             if i.enabled and i.primary_route == "化学物质"
                              and not i.free_input_only))
         self.assertGreaterEqual(len(menu.recommended), 4)   # 领域专属选项充足
         ids = {o.intent.id for o in menu.recommended}
@@ -92,10 +92,10 @@ class TestMenuBuilder(unittest.TestCase):
         self.assertTrue(menu.recommended)      # 化学仍可用
 
     def test_disabling_phrase_route(self):
-        settings = load_settings({"routes": {"en_phrase": {"enabled": False}}})
+        settings = load_settings({"routes": {"英语短语": {"enabled": False}}})
         _, menu = make_menu("break the ice", settings)
         enabled_routes = {o.intent.primary_route for o in menu.recommended + menu.others}
-        self.assertNotIn("en_phrase", enabled_routes)
+        self.assertNotIn("英语短语", enabled_routes)
         grayed = {o.intent.id for o in menu.grayed}
         self.assertIn("en.phrase.legacy", grayed)
 

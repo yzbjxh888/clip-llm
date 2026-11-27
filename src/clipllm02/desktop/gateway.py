@@ -22,6 +22,21 @@ from pathlib import Path
 _FENCE_RE = re.compile(r"^```(?:json|latex|tex|markdown)?\s*|\s*```$", re.I)
 
 
+def _decision_section(settings) -> dict:
+    """Settings 与 dict 都能被 SystemOne 路径读取（测试与运行期同构）。"""
+    if settings is None:
+        return {}
+    return dict(settings.get("decision_model_config") or {})
+
+
+def decision_model_api_url(settings=None) -> str:
+    return str(_decision_section(settings).get("decision_model_api_url") or "")
+
+
+def decision_model_name(settings=None) -> str:
+    return str(_decision_section(settings).get("decision_model_name") or "")
+
+
 @dataclass(frozen=True)
 class GatewayConfig:
     api_url: str = ""
@@ -38,12 +53,45 @@ class GatewayConfig:
 
     @classmethod
     def from_settings(cls, settings) -> "GatewayConfig":
+        main = dict(getattr(settings, "main_model_config", None) or {})
         return cls(
-            api_url=str(settings.get("desktop_api_url", "")),
-            api_key=str(settings.get("desktop_api_key", "")),
-            model=str(settings.get("desktop_model", "")),
+            api_url=str(main.get("main_model_api_url")
+                        or settings.get("desktop_api_url", "")),
+            api_key=str(main.get("main_model_key")
+                        or settings.get("desktop_api_key", "")),
+            model=str(main.get("main_model_name")
+                      or settings.get("desktop_model", "")),
             timeout=int(settings.get("desktop_timeout", 60)),
             max_tokens=int(settings.get("desktop_max_tokens", 2048)),
+        )
+
+
+@dataclass(frozen=True)
+class DecisionConfig:
+    """决策模型配置：URL/model 可配置，Key 永远只来自 AGNES_API_KEY。"""
+    api_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    timeout: int = 15
+    max_tokens: int = 128
+    temperature: float = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_url.strip() and self.api_key.strip()
+                    and self.model.strip())
+
+    @classmethod
+    def from_settings(cls, settings) -> "DecisionConfig":
+        cfg = dict(settings.decision_model_config or {})
+        return cls(
+            api_url=str(cfg.get("decision_model_api_url")
+                        or cfg.get("main_model_api_url") or ""),
+            api_key=str(cfg.get("main_model_key") or ""),
+            model=str(cfg.get("decision_model_name")
+                      or cfg.get("main_model_name") or ""),
+            timeout=int(cfg.get("timeout") or 15),
+            max_tokens=int(cfg.get("max_tokens") or 128),
         )
 
 
@@ -204,6 +252,148 @@ class Gateway:
             return GatewayResult(html="", ok=False, error=f"网络请求失败：{exc}")
         except (ValueError, TypeError) as exc:
             return GatewayResult(html="", ok=False, error=f"响应解析失败：{exc}")
+
+
+# ADR-009 / FR-022：决策模型 = Agnes SystemOne，互斥单选（choice + argmax）。
+SYSTEMONE_API_URL = "https://apihub.agnes-ai.com/v1/systemone"
+SYSTEMONE_MODEL = "agnes-sys1-1.0"
+SYSTEMONE_CATCH_ALL_ID = "通用解析"
+SYSTEMONE_CATCH_ALL_DESCRIPTION = "其他无法归类的内容（兜底）"
+SYSTEMONE_INSTRUCTIONS = "从候选类别中选择与输入最匹配的一个；无法确定时选 通用解析。"
+IMAGE_ROUTE_ID = "图片识别"
+
+
+def _env_config(name: str, default: str = "") -> str:
+    """参考 agnes-sys1 MCP 的 _config()：环境变量优先，其次 ~/.env。"""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    env_path = Path.home() / ".env"
+    if not env_path.is_file():
+        return default
+    pattern = re.compile(r"^\s*" + re.escape(name) + r"\s*=\s*(.*?)\s*$")
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return default
+    for line in lines:
+        match = pattern.match(line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        return value.strip() or default
+    return default
+
+
+def agnes_api_key() -> str:
+    """Key 只从 AGNES_API_KEY 读取，绝不取工程配置、绝不写日志。"""
+    return _env_config("AGNES_API_KEY")
+
+
+def systemone_categories(decision_model_categories) -> dict[str, str]:
+    """ADR-010：候选类别直接来自 B（{类别id: 判别描述}），不再从路由清单派生。
+
+    保留 通用解析 catch-all；不修改传入的 B。这是 SystemOne 请求 criteria 的
+    唯一来源，判别描述由用户在「拦截」页编辑。
+    """
+    categories: dict[str, str] = {}
+    for key, value in (decision_model_categories or {}).items():
+        rid = str(key)
+        if not rid or rid == IMAGE_ROUTE_ID:
+            continue
+        categories[rid] = str(value) if value else rid
+    categories.setdefault(SYSTEMONE_CATCH_ALL_ID, SYSTEMONE_CATCH_ALL_DESCRIPTION)
+    return categories
+
+
+def build_systemone_request(state: str, categories, *, instructions=None,
+                            model=None, settings=None) -> dict:
+    """SystemOne 的 choice 原语：一个 category 问题，criteria = 类别清单。
+
+    instructions（判别指令）优先取显式参数，其次取用户配置
+    ``decision_model_instructions``，均缺省时回退内置常量。criteria 只来自 B。
+    """
+    configured = ""
+    if settings is not None:
+        configured = str(settings.get("decision_model_instructions") or "").strip()
+    return {
+        "state": state,
+        "questions": {"category": {
+            "type": "choice",
+            "instructions": instructions or configured or SYSTEMONE_INSTRUCTIONS,
+            "criteria": dict(categories),
+        }},
+        "model": model or decision_model_name(settings) or SYSTEMONE_MODEL,
+    }
+
+
+def decode_systemone_classify(data) -> str | None:
+    """choice + argmax：概率表存在时取概率最大者，否则回退 choice。"""
+    if not isinstance(data, dict):
+        return None
+    answers = data.get("answers")
+    if not isinstance(answers, dict):
+        return None
+    answer = answers.get("category")
+    if not isinstance(answer, dict):
+        return None
+    probabilities = answer.get("probabilities")
+    if isinstance(probabilities, dict) and probabilities:
+        try:
+            return str(max(probabilities, key=lambda k: probabilities[k]))
+        except (TypeError, ValueError):
+            return None
+    choice = answer.get("choice")
+    return str(choice) if choice else None
+
+
+def classify_with_systemone(state: str, categories, *, instructions=None,
+                            api_url=None, model=None, timeout=15,
+                            cancel=None, settings=None) -> str | None:
+    """唯一的 SystemOne 联网实现；失败返回 None，不隐式回退本地分类器。"""
+    key = agnes_api_key()
+    if not key:
+        return None
+    if cancel is not None and cancel.is_set():
+        return None
+    payload = build_systemone_request(state, categories,
+                                      instructions=instructions, model=model,
+                                      settings=settings)
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        api_url or decision_model_api_url(settings) or SYSTEMONE_API_URL,
+        data=body,
+        headers={"Authorization": f"Bearer {key}",
+                 "Content-Type": "application/json"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+            OSError, ValueError, TypeError):
+        return None
+    return decode_systemone_classify(data)
+
+
+def request_route(settings, *, state: str, route_registry, cancel=None) -> str:
+    """短段 state → SystemOne classify → 命中 B 类别清单的 JSON 字符串回复。
+
+    ADR-010 反转 ADR-009：categories/criteria 来自「拦截」页的 B，而非路由清单。
+    ``route_registry`` 仅为兼容既有调用方保留，不再作为候选类别来源；返回的 id
+    必须命中 B 才被接受。无 Key / 请求失败时返回空串，绝不隐式回退本地分类器。
+    """
+    b = settings.get("decision_model_categories") or {}
+    config = DecisionConfig.from_settings(settings)
+    categories = systemone_categories(b)
+    selected = classify_with_systemone(
+        state, categories,
+        api_url=config.api_url or None, model=config.model or None,
+        settings=settings, cancel=cancel)
+    if not selected or selected not in categories:
+        return ""
+    return json.dumps({"selected_route_id": selected}, ensure_ascii=False)
 
 
 class ResultCache:

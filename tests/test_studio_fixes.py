@@ -284,9 +284,9 @@ class Issue5MoreIntents(unittest.TestCase):
         tops = {dialog.prompt_tree.topLevelItem(i).data(0, Qt.UserRole)[1]
                 for i in range(dialog.prompt_tree.topLevelItemCount())}
         # 第二层按提示词模板分组，顶层数量与模板数量一致
-        self.assertIn("chem_substance", tops)
-        self.assertIn("en_word", tops)
-        self.assertIn("image", tops)
+        self.assertIn("化学物质", tops)
+        self.assertIn("英语单词", tops)
+        self.assertIn("图片识别", tops)
         self.assertEqual(len(tops), len(dialog.data["routes"]))
         total = sum(dialog.prompt_tree.topLevelItem(i).childCount()
                     for i in range(dialog.prompt_tree.topLevelItemCount()))
@@ -568,7 +568,7 @@ class Issue9SettingsEditing(unittest.TestCase):
         dialog._delete_route()
         self.assertIn("zz_test_route", dialog.data["routes"])
         # 无引用时可删除
-        dialog.data["intents"][0]["primary_route"] = "general"
+        dialog.data["intents"][0]["primary_route"] = "通用解析"
         dialog._delete_route()
         self.assertNotIn("zz_test_route", dialog.data["routes"])
         dialog.close()
@@ -621,7 +621,7 @@ class TestLibrarySettings(unittest.TestCase):
         self.assertTrue((merged / "a.md").exists())
         # 同名笔记不能被旧文件覆盖
         self.assertEqual((merged / "b.md").read_text(encoding="utf-8"), "old")
-        self.assertTrue((root / "chem_substance" / "b.md").exists())
+        self.assertTrue((root / "化学物质" / "b.md").exists())
         shutil.rmtree(root)
         dialog.close()
 

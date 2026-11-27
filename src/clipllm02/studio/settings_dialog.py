@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
 from pathlib import Path
@@ -13,24 +14,28 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QPalette
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout,
     QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QInputDialog, QKeySequenceEdit, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
-    QTabWidget, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+    QListWidgetItem, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSpinBox,
+    QSizePolicy, QTabWidget, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from ..models import intent_prompt_source
-from ..settings import Settings, load_defaults, validate
+from ..desktop.gateway import SYSTEMONE_INSTRUCTIONS
+from ..settings import (
+    LEGACY_ROUTE_ID_MAP, MAIN_MODEL_CONFIG_LEGACY_FIELDS, Settings,
+    apply_decision_model_json, apply_route_template_json, load_defaults,
+    route_template_json, validate)
 from .config import (
     DEFAULT_HOTKEYS, HOTKEY_LABELS, load_legacy, save_config,
 )
 from .theme_tokens import (
     QSS_SCROLL_AREA, TYPO_BODY_MD, TYPO_BODY_SM, TYPO_HEADLINE_LG,
     TYPO_HEADLINE_MD, TYPO_LABEL_SM, BORDER_WIDTH,
-    SPACING_SM, SPACING_MD, SPACING_LG, SPACING_XS, RADIUS_DEFAULT,
+    SPACING_SM, SPACING_MD, SPACING_LG, SPACING_XS, RADIUS_DEFAULT, RADIUS_ITEM,
     build_qss, tokens,
 )
 
@@ -87,6 +92,26 @@ QTreeWidget::item:selected, QTableWidget::item:selected, QListWidget::item:selec
 QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {{
   background:{t['background']};
   }}
+/* 拦截规则卡片：一体面上的紧凑条目，边框只标真实条目边界 */
+QFrame#policyCard, QFrame#policyCardLocked {{
+  background:{t['surface_lowest']};
+  border:{BORDER_WIDTH}px solid {t['outline_strong']};
+  border-radius:{RADIUS_ITEM}px;
+  }}
+QFrame#policyCard:hover {{ background:{t['surface_low']};
+  border-color:{t['outline_strong']}; }}
+QFrame#policyCardLocked:hover {{ background:{t['chip']};
+  border-color:{t['outline_strong']}; }}
+QFrame#policyCard:focus, QFrame#policyCardLocked:focus {{
+  background:{t['surface_low']}; border-color:{t['primary']}; }}
+QFrame#policyCard[selected="true"], QFrame#policyCardLocked[selected="true"] {{
+  background:{t['primary_fixed']}; border-color:{t['primary']}; }}
+QFrame#policyCardLocked {{ background:{t['chip']}; }}
+QCheckBox#policyToggle {{ min-height:24px; }}
+QLabel#policyDetail {{ color:{t['text_variant']};
+  font-size:{TYPO_LABEL_SM[0]}px; }}
+QLabel#policyLockedBadge {{ color:{t['text_variant']};
+  font-size:{TYPO_LABEL_SM[0]}px; }}
 """
 
 
@@ -122,6 +147,90 @@ def format_includes(includes) -> str:
         for inc in includes or [])
 
 
+class PolicyRuleCard(QFrame):
+    """一条拦截规则：开关 + 简述；整卡 tooltip 给出完整说明。
+
+    一体化面上用 1px 边框与紧凑留白区分条目，不堆叠装饰性卡片；locked 规则
+    的开关禁用并带「固定」标签，状态不只靠颜色传达。
+    """
+
+    selected = Signal(str)
+    toggled_rule = Signal(str, bool)
+    navigate = Signal(str, int)
+
+    def __init__(self, rule_id, label, description, enabled, locked, parent=None):
+        super().__init__(parent)
+        self.rule_id = str(rule_id)
+        self.locked = bool(locked)
+        self.setObjectName("policyCardLocked" if self.locked else "policyCard")
+        full_text = str(description or label or rule_id)
+        self.setToolTip(full_text)
+        self.setAccessibleName(f"{label or rule_id}（{self.rule_id}）")
+        self.setAccessibleDescription(full_text)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setMinimumHeight(48)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(SPACING_SM, SPACING_XS, SPACING_SM, SPACING_XS)
+        outer.setSpacing(2)
+        row = QHBoxLayout()
+        row.setSpacing(SPACING_SM)
+        self.toggle = QCheckBox()
+        self.toggle.setObjectName("policyToggle")
+        self.toggle.setMinimumHeight(24)
+        self.toggle.setChecked(bool(enabled))
+        self.toggle.setEnabled(not self.locked)
+        self.toggle.setAccessibleName(f"启用{label or rule_id}拦截")
+        self.summary = QLabel(str(label or rule_id))
+        self.summary.setObjectName("policySummary")
+        row.addWidget(self.toggle)
+        row.addWidget(self.summary, 1)
+        if self.locked:
+            badge = QLabel("固定")
+            badge.setObjectName("policyLockedBadge")
+            row.addWidget(badge)
+        outer.addLayout(row)
+
+        # 简述常驻一行，完整说明仍走 tooltip：不逼用户逐条悬停才能分辨规则。
+        self.detail = QLabel(full_text[:40])
+        self.detail.setObjectName("policyDetail")
+        self.detail.setIndent(24)
+        outer.addWidget(self.detail)
+        self.toggle.toggled.connect(self._on_toggle)
+
+    def _on_toggle(self, checked: bool) -> None:
+        if self.locked:
+            self.toggle.blockSignals(True)
+            self.toggle.setChecked(True)
+            self.toggle.blockSignals(False)
+            return
+        self.toggled_rule.emit(self.rule_id, bool(checked))
+
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", "true" if selected else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def keyPressEvent(self, event) -> None:
+        key = event.key()
+        if key in (Qt.Key_Right, Qt.Key_Down):
+            self.navigate.emit(self.rule_id, 1)
+            return
+        if key in (Qt.Key_Left, Qt.Key_Up):
+            self.navigate.emit(self.rule_id, -1)
+            return
+        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.selected.emit(self.rule_id)
+            return
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.selected.emit(self.rule_id)
+        super().mousePressEvent(event)
+
+
 class SettingsDialog(QDialog):
     applied = Signal(object)
 
@@ -151,9 +260,12 @@ class SettingsDialog(QDialog):
         apply_settings_palette(self, self._dark)
         self.data.setdefault("intents", [])
         self.data.setdefault("route_prompts", {})
+        self.data.setdefault("decision_model_categories", {})
         self._legacy = load_legacy()
         self._current_intent_id = ""
         self._loading = False
+        # v10 票据 26：编辑区最近一次 JSON 解析/校验错误；非空时『确定』不得落盘
+        self._route_json_error: list[str] = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 12)
@@ -292,13 +404,8 @@ class SettingsDialog(QDialog):
         self.intent_hint_edit = QLineEdit()
         self.intent_hint_edit.textChanged.connect(self._flush_intent)
         form.addRow("说明", self.intent_hint_edit)
-        routes = self.data.get("routes", {})
         self.intent_route_combo = QComboBox()
-        for rid in sorted(routes):
-            self.intent_route_combo.addItem(
-                str(routes[rid].get("label") or rid), rid)
-        if self.intent_route_combo.count() == 0:
-            self.intent_route_combo.addItem("通用解析", "general")
+        self._fill_intent_routes()
         self.intent_route_combo.currentIndexChanged.connect(self._flush_intent)
         self.intent_route_combo.currentIndexChanged.connect(
             self._sync_followup_visibility)
@@ -314,7 +421,7 @@ class SettingsDialog(QDialog):
         form.addRow("排序", self.intent_order_spin)
         self.intent_includes_edit = QLineEdit()
         self.intent_includes_edit.setPlaceholderText(
-            "en_word:phonetic|etymology_roots, general:key_points")
+            "英语单词:phonetic|etymology_roots, 通用解析:key_points")
         self.intent_includes_edit.textChanged.connect(self._flush_intent)
         form.addRow("借用其他路由片段", self.intent_includes_edit)
         self.intent_format_combo = QComboBox()
@@ -323,7 +430,7 @@ class SettingsDialog(QDialog):
         form.addRow("默认呈现", self.intent_format_combo)
         self.intent_prompt = QPlainTextEdit()
         self.intent_prompt.setPlaceholderText(
-            "该查询方式的提示词；留空则直接复用主路由模板（含旧脚本 9 套完整 Prompt）")
+            "该查询方式的提示词；留空则直接使用文本模板（含旧脚本 9 套完整 Prompt）")
         self.intent_prompt.textChanged.connect(self._flush_intent)
         form.addRow("提示词", self.intent_prompt)
         # 仅图片方式：识别完成后是否继续进入文本模板（选项里的模板动态来自
@@ -367,7 +474,7 @@ class SettingsDialog(QDialog):
         # 第二层：查询方式按「提示词模板」分组，顶层数量恒等于模板数量
         grouped: dict[str, list[dict]] = {}
         for item in self.data["intents"]:
-            route = str(item.get("primary_route") or "general")
+            route = str(item.get("primary_route") or "通用解析")
             grouped.setdefault(route, []).append(item)
         for route_id, pack in (self.data.get("routes") or {}).items():
             label = str(pack.get("label") or route_id)
@@ -437,7 +544,7 @@ class SettingsDialog(QDialog):
         self._fill_intent_routes(
             image_only="image" in (data.get("domains") or ()))
         index = self.intent_route_combo.findData(
-            str(data.get("primary_route") or "general"))
+            str(data.get("primary_route") or "通用解析"))
         self.intent_route_combo.setCurrentIndex(max(0, index))
         domains = data.get("domains") or ["*"]
         index = self.intent_domain_combo.findData(domains[0])
@@ -452,9 +559,9 @@ class SettingsDialog(QDialog):
         self.intent_followup_combo.setCurrentIndex(max(0, index))
         self._sync_followup_visibility()
         if not data.get("prompt_override"):
-            self.legacy_hint.setText("当前复用主路由模板（提示词留空即生效）")
+            self.legacy_hint.setText("当前使用文本模板（提示词留空即生效）")
         else:
-            self.legacy_hint.setText("当前使用本条专属提示词")
+            self.legacy_hint.setText("当前使用自定义提示词")
         self._loading = False
 
     def _flush_intent(self, *_args) -> None:
@@ -480,25 +587,48 @@ class SettingsDialog(QDialog):
         data["followup_route"] = str(self.intent_followup_combo.currentData() or "")
         self._refresh_followup_hint()
         self.legacy_hint.setText(
-            "当前复用主路由模板（提示词留空即生效）"
-            if not data["prompt_override"] else "当前使用本条专属提示词")
+            "当前使用文本模板（提示词留空即生效）"
+            if not data["prompt_override"] else "当前使用自定义提示词")
         current = self.prompt_tree.currentItem()
         if current is not None:
             current.setText(0, data["label"])
 
-    def _fill_intent_routes(self, *, image_only: bool) -> None:
-        """主路由下拉只列同类模板：图片方式只能挂图片模板，反之亦然。"""
+    def _fill_intent_routes(self, *, image_only: bool | None = None) -> None:
+        """主路由下拉按三组填充：提示词模板 / 自定义模板 / 图片模板。
+
+        组标题只是分隔（data=None 且不可选）；图片方式只列图片组，文本方式
+        只列两组文本模板，构造时列全部三组。空组不显示标题，选中项仍返回
+        route id；没有同类模板时保留「通用解析」兜底项。
+        """
         combo = self.intent_route_combo
         current = combo.currentData()
         combo.blockSignals(True)
         combo.clear()
-        for rid in sorted(self.data.get("routes", {})):
-            pack = self.data["routes"][rid]
-            if bool(pack.get("vision")) != image_only:
+        routes = self.data.get("routes", {})
+        ids = sorted(routes)
+        groups = []
+        if image_only is not True:
+            groups.append(("提示词模板", [rid for rid in ids
+                                    if routes[rid].get("source_from_decision_model")
+                                    and not routes[rid].get("vision")]))
+            groups.append(("自定义模板", [rid for rid in ids
+                                    if not routes[rid].get("vision")
+                                    and not routes[rid].get("source_from_decision_model")]))
+        if image_only is not False:
+            groups.append(("图片模板", [rid for rid in ids
+                                  if routes[rid].get("vision")]))
+        for title, route_ids in groups:
+            if not route_ids:
                 continue
-            combo.addItem(str(pack.get("label") or rid), rid)
+            combo.addItem(title, None)
+            model = combo.model()
+            header = model.item(combo.count() - 1) if model is not None else None
+            if header is not None:
+                header.setEnabled(False)
+            for rid in route_ids:
+                combo.addItem(str(routes[rid].get("label") or rid), rid)
         if combo.count() == 0:                     # 没有同类模板时不留空下拉
-            combo.addItem("通用解析", "general")
+            combo.addItem("通用解析", "通用解析")
         combo.blockSignals(False)
         if current:
             combo.setCurrentIndex(max(0, combo.findData(current)))
@@ -603,9 +733,31 @@ class SettingsDialog(QDialog):
 
     def _delete_intent(self) -> None:
         data = self._intent_by_id(self._current_intent_id)
-        if not data or not data.get("custom"):
-            self.legacy_hint.setText("只能删除自定义意图；出厂意图可停用或改提示词。")
+        if not data:
             return
+        intent_id = str(data.get("id") or "")
+        if intent_id == "image.ocr":
+            # v19 票据 35：公式识别是票34「图片识别后自动续跑」链路的关键项，
+            # 出厂虽带专属提示词可删，但这里单独挡住；停用/改提示词仍允许。
+            self.legacy_hint.setText(
+                "公式识别是内置图片方式，不可删除（可停用或改提示词）。")
+            return
+        is_custom = bool(data.get("custom"))
+        has_override = bool(str(data.get("prompt_override") or "").strip())
+        if not is_custom and not has_override:
+            # v16 票据 32：纯「文本模板」的出厂意图仍挡，但提示要说人话，
+            # 避免再出现「界面显示自定义却删不掉」的困惑。
+            self.legacy_hint.setText(
+                "这是出厂意图，可停用或改提示词；要删除请先给它填专属提示词。")
+            return
+        # 显示「自定义」的出厂意图（有专属提示词、无 custom 标记）真删时
+        # 必须打墓碑，否则 _merge_intents 下次加载会按 id 补回。
+        # 用户自建意图（custom=True）本来就不会被补回，不写墓碑。
+        factory_ids = {i.id for i in load_defaults().intents}
+        if not is_custom and intent_id in factory_ids:
+            removed = self.data.setdefault("removed_intents", [])
+            if intent_id not in removed:
+                removed.append(intent_id)
         self.data["intents"] = [i for i in self.data["intents"]
                                 if i.get("id") != self._current_intent_id]
         self._current_intent_id = ""
@@ -639,7 +791,9 @@ class SettingsDialog(QDialog):
         layout.setSpacing(8)
         layout.addWidget(self._note(
             "文本模板决定「怎么解释」；图片模板就是识别图片时发给视觉模型的"
-            "提示词。查询方式不填提示词，就会用所属模板这一份。"))
+            "提示词。查询方式不填提示词，就会用所属模板这一份。"
+            "下方编辑区是这条路由的完整 JSON（prompt / sections / fields 都可改）；"
+            "改 id 只能选决策模型里已有的中文类别，保存时自动同步所有引用。"))
         row = QHBoxLayout()
         self.route_combo = QComboBox()
         self.route_combo.currentIndexChanged.connect(self._load_route_prompt)
@@ -668,6 +822,8 @@ class SettingsDialog(QDialog):
         self.route_prompt.textChanged.connect(self._save_route_prompt)
         layout.addWidget(self.route_prompt, 2)
 
+        # v9 票据 25：按用户拍板，移除「路由 JSON（唯一事实源）」编辑区块。
+        # 数据层 routes 仍由 B 单向派生、仍是唯一事实源；这里只动 UI 展示。
         vision_row = QHBoxLayout()
         vision_row.addWidget(QLabel("图片默认排最前"))
         self.image_default_combo = QComboBox()
@@ -711,7 +867,11 @@ class SettingsDialog(QDialog):
             if header is not None:
                 header.setEnabled(False)       # 组标题只是分隔，不可选中
             for rid in ids:
-                combo.addItem(str(routes[rid].get("label") or rid), rid)
+                label = str(routes[rid].get("label") or rid)
+                # v11 票据 27：所有受 B 约束的标签统一标注（新标记，与「用户新增」正交）
+                if routes[rid].get("source_from_decision_model"):
+                    label += " · 来自决策模型"
+                combo.addItem(label, rid)
         combo.blockSignals(False)
         if current:
             index = combo.findData(current)
@@ -725,30 +885,111 @@ class SettingsDialog(QDialog):
         if intent_id:
             self.data["desktop_vision_intent"] = str(intent_id)
 
+    def _set_short_source(self, value: str) -> None:
+        """互斥开关落盘：权威字段 + 兼容布尔标志同步，两者不可能同时为真。"""
+        self.data["short_classifier_source"] = value
+        self.data["local_classifier_enabled"] = value == "local_classifier"
+        self.data["decision_model_enabled"] = value == "decision_model"
+
     def _set_vision_enabled(self, value: bool) -> None:
         self.data.setdefault("image", {})["vision_enabled"] = bool(value)
 
-    def _set_auto_continue(self, value: bool) -> None:
-        self.data.setdefault("image", {})["auto_continue"] = bool(value)
-
     def _set_popup_max_mb(self, value: int) -> None:
         self.data.setdefault("image", {})["clipboard_popup_max_mb"] = int(value)
+
+    @staticmethod
+    def _flat_decision_json(data: dict) -> dict:
+        """v14 票据 30：统一框内容 = 平铺 {_instructions: 指令, 类别: 判别描述}。
+
+        instructions 为空时显示内置默认，保证框非空可见；不修改传入的 data。
+        """
+        instructions = str(data.get("decision_model_instructions") or "")
+        flat = {"_instructions": instructions if instructions.strip()
+                else SYSTEMONE_INSTRUCTIONS}
+        flat.update(data.get("decision_model_categories") or {})
+        return flat
+
+    def _apply_decision_model_json(self) -> bool:
+        """v14 票据 30：平铺框拆行——`_instructions` 走指令字段，其余照旧喂 B。
+
+        低风险核心：拆出 `_instructions` 后，剩余类别对象原样交给既有的
+        ``apply_decision_model_json``；B 派生/删类别/三处对齐/标记逻辑一行不改。
+        解析错误只提示、不落盘，由既有 dirty 门控挡住『确定』。
+        """
+        try:
+            payload = json.loads(self.decision_model_json_edit.toPlainText())
+        except (ValueError, TypeError) as exc:
+            self.status_hint.setText("⚠ JSON 解析失败：" + str(exc))
+            return False
+        if not isinstance(payload, dict):
+            self.status_hint.setText("⚠ JSON 顶层必须是对象")
+            return False
+        payload = dict(payload)
+        raw_instructions = payload.pop("_instructions", "")
+        if not isinstance(raw_instructions, str):
+            raw_instructions = ""
+        data, errors = apply_decision_model_json(
+            self.data, json.dumps(payload, ensure_ascii=False))
+        if errors:
+            self.status_hint.setText("⚠ " + "；".join(errors))
+            return False
+        # 默认不写盘：空、非字符串、或等于内置默认 → 保持空（运行时回退内置）。
+        if (not raw_instructions.strip()
+                or raw_instructions == SYSTEMONE_INSTRUCTIONS):
+            data["decision_model_instructions"] = ""
+        else:
+            data["decision_model_instructions"] = raw_instructions
+        self.data = data
+        self.decision_model_json_edit.blockSignals(True)
+        self.decision_model_json_edit.setPlainText(json.dumps(
+            self._flat_decision_json(self.data), ensure_ascii=False, indent=2))
+        self.decision_model_json_edit.blockSignals(False)
+        self._rebuild_route_combo()
+        self._rebuild_switches()
+        self._reload_tree()
+        # v9：routes JSON 框已移除，只有 B 编辑框需要清 dirty。
+        self._decision_model_json_user_edited = False
+        self.status_hint.setText("已应用并派生模板，请点右下角『确定』保存。")
+        return True
+
+    def _mark_decision_model_json_dirty(self) -> None:
+        """用户真编辑 B JSON 框（textChanged）时置 dirty。"""
+        self._decision_model_json_user_edited = True
+
+    def _apply_pending_json_edits(self) -> bool:
+        """总按钮点按时，只应用用户真编辑过的 B JSON 框（票据21 dirty）。
+
+        v9：routes JSON 编辑框已按用户拍板移除；B 仍是唯一事实源，派生照旧。
+        未 dirty 的框即使与草稿不同也不覆盖——差异来自模板页/查询方式页等
+        其它合法入口。
+        """
+        if getattr(self, "_route_json_error", None):
+            # v10：模板页编辑区有未修复的 JSON 错误，绝不能带着旧数据落盘
+            self.status_hint.setText("⚠ " + "；".join(self._route_json_error))
+            return False
+        if self._decision_model_json_user_edited:
+            return self._apply_decision_model_json()
+        return True
 
     def _load_route_prompt(self, _index: int) -> None:
         route_id = self.route_combo.currentData()
         if not route_id:
             return
         route = self.data.get("routes", {}).get(route_id, {})
-        # 这一份模板到底有没有被用上：留空的查询方式复用它，写了专属提示词的不用
+        # 这一份模板到底有没有被用上：留空的查询方式复用它，写了自定义提示词的不用
         members = [i for i in self.data.get("intents", [])
                    if i.get("primary_route") == route_id]
         reusing = [i for i in members
                    if not str(i.get("prompt_override") or "").strip()]
-        text = self.data["route_prompts"].get(route_id, route.get("prompt", ""))
-        if str(text).strip():
+        # v10 票据 26：编辑区显示整条路由的完整 JSON（可就地改 sections/fields），
+        # 不再只是一句 prompt。usage 提示仍按「实际生效的 prompt」判断。
+        text = route_template_json(self.data, route_id)
+        effective_prompt = self.data["route_prompts"].get(
+            route_id, route.get("prompt", ""))
+        if str(effective_prompt).strip():
             usage = f"当前 {len(reusing)}/{len(members)} 条查询方式复用此模板"
             if len(reusing) < len(members):
-                usage += "，其余用各自的专属提示词"
+                usage += "，其余用各自的自定义提示词"
             usage += "。"
         else:
             usage = ("当前模板不提供提示词（留空）——每条查询方式必须自带"
@@ -762,12 +1003,19 @@ class SettingsDialog(QDialog):
                 "格式要求写在各条查询方式自己的提示词里。" + usage
                 + f"当前默认排在最前：{default}。")
         else:
-            self.route_kind_hint.setText(
-                "文本模板：文本查询时拼接的系统提示词（查询方式留空时使用）。"
-                + usage)
+            # v11 票据 27：说明也跟新标记走，所有受约束标签显示同一句
+            origin = ("「来自决策模型」：提示词默认通用结构化模板，可自由修改；"
+                      "改判别描述不会覆盖这里的文案。"
+                      if route.get("source_from_decision_model")
+                      else "文本模板：文本查询时拼接的系统提示词（查询方式留空时使用）。")
+            self.route_kind_hint.setText(origin + usage)
         self.route_prompt.blockSignals(True)
         self.route_prompt.setPlainText(text)
         self.route_prompt.blockSignals(False)
+        # 换路由就是全新一份 JSON，先前那条编辑区的错误状态随之作废
+        if self._route_json_error and hasattr(self, "status_hint"):
+            self.status_hint.setText("")
+        self._route_json_error = []
         self.route_label_edit.blockSignals(True)
         self.route_label_edit.setText(str(route.get("label") or route_id))
         self.route_label_edit.blockSignals(False)
@@ -779,9 +1027,24 @@ class SettingsDialog(QDialog):
             return
         label = text.strip() or route_id
         self.data.setdefault("routes", {}).setdefault(route_id, {})["label"] = label
+        # v10：显示名与编辑区 JSON 里的 label 双向同步（回填时掐信号，避免回环）
+        try:
+            pack = json.loads(self.route_prompt.toPlainText())
+        except (ValueError, TypeError):
+            pack = None
+        if isinstance(pack, dict) and pack.get("label") != label:
+            pack["label"] = label
+            self.route_prompt.blockSignals(True)
+            self.route_prompt.setPlainText(
+                json.dumps(pack, ensure_ascii=False, indent=2))
+            self.route_prompt.blockSignals(False)
         index = self.route_combo.currentIndex()
         if index >= 0:
-            self.route_combo.setItemText(index, label)
+            # v11 票据 27：「显示名」改名同样不能丢标注（与 JSON 改名路径一致）
+            pack = self.data.get("routes", {}).get(route_id) or {}
+            suffix = (" · 来自决策模型"
+                      if pack.get("source_from_decision_model") else "")
+            self.route_combo.setItemText(index, label + suffix)
         cb = self.domain_checks.get(route_id)
         if cb is not None:
             cb.setText(label)
@@ -797,8 +1060,49 @@ class SettingsDialog(QDialog):
         route_id = self.route_combo.currentData()
         if not route_id:
             return
-        # 空也是有效状态：这份模板不提供提示词（校验会要求方式自带）
-        self.data["route_prompts"][route_id] = self.route_prompt.toPlainText()
+        old_id = str((self.data.get("routes", {}).get(route_id) or {}).get("id")
+                     or route_id)
+        had_error = bool(self._route_json_error)
+        data, errors = apply_route_template_json(
+            self.data, route_id, self.route_prompt.toPlainText())
+        if errors:
+            # v10：解析/结构/id 校验错误只提示、不落盘；点『确定』也会被挡住
+            self._route_json_error = errors
+            self.status_hint.setText("⚠ " + "；".join(errors))
+            return
+        self._route_json_error = []
+        if had_error:
+            self.status_hint.setText("")
+
+        previous_keys = set(self.data.get("routes") or {})
+        self.data = data
+        new_keys = set(self.data.get("routes") or {})
+        if new_keys != previous_keys:
+            # 真换了 key：下拉/开关/树整体重建，保证没有悬空引用
+            new_id = next(iter(new_keys - previous_keys), route_id)
+            self._rebuild_route_combo(new_id)
+            self._rebuild_switches()
+            self._reload_tree()
+            return
+        pack = self.data["routes"].get(route_id) or {}
+        if str(pack.get("id") or route_id) != old_id:
+            # key 已是目标值、只是 id 字段从旧英文对齐成中文：整框回填
+            self._load_route_prompt(self.route_combo.currentIndex())
+            return
+        label = str(pack.get("label") or route_id)
+        if self.route_label_edit.text() != label:
+            self.route_label_edit.blockSignals(True)
+            self.route_label_edit.setText(label)
+            self.route_label_edit.blockSignals(False)
+        index = self.route_combo.currentIndex()
+        if index >= 0:
+            current = self.route_combo.itemText(index) or ""
+            # v11 票据 27：后缀随新标记走；改名后标注不再丢失
+            suffix = (" · 来自决策模型"
+                      if pack.get("source_from_decision_model") else "")
+            wanted = label + suffix
+            if current != wanted:
+                self.route_combo.setItemText(index, wanted)
 
     def _add_route(self) -> None:
         text, ok = QInputDialog.getText(self, "新增模板",
@@ -840,6 +1144,13 @@ class SettingsDialog(QDialog):
     def _delete_route(self) -> None:
         route_id = self.route_combo.currentData()
         if not route_id:
+            return
+        pack = self.data.get("routes", {}).get(route_id) or {}
+        if pack.get("source_from_decision_model"):
+            self.legacy_hint.setText("提示词模板（与决策模型绑定）不可删除")
+            return
+        if pack.get("vision"):
+            self.legacy_hint.setText("图片识别模板不可删除")
             return
         used = [i["id"] for i in self.data["intents"]
                 if i.get("primary_route") == route_id
@@ -1012,31 +1323,65 @@ class SettingsDialog(QDialog):
         w = QWidget()
         form = QFormLayout(w)
         self._edits = {}
-        for key, label in (("desktop_api_url", "文本模型 API URL"),
-                           ("desktop_api_key", "文本模型 API Key"),
-                           ("desktop_model", "文本模型名称"),
-                           ("desktop_vision_api_url", "视觉模型 API URL（留空复用）"),
-                           ("desktop_vision_api_key", "视觉模型 Key（留空复用）"),
-                           ("desktop_vision_model", "视觉模型名称")):
-            edit = QLineEdit(str(self.data.get(key, "")))
+
+        def _config_for(key: str) -> dict:
+            section = "main_model_config" if key.startswith("main_model_") \
+                else "decision_model_config"
+            return self.data.setdefault(section, {})
+
+        for key, label in (("main_model_api_url", "主模型 API URL（文字与图片共用）"),
+                           ("main_model_key", "主模型 API Key"),
+                           ("main_model_name", "主模型名称"),
+                           ("decision_model_api_url", "决策模型 API URL"),
+                           ("decision_model_key", "决策模型 API Key"),
+                           ("decision_model_name", "决策模型名称")):
+            section = _config_for(key)
+            value = str(section.get(key, "") or "")
+            legacy_key = MAIN_MODEL_CONFIG_LEGACY_FIELDS.get(key)
+            if legacy_key and not value:
+                # 跟 gateway 一致：新字段空时显示运行时真正在用的旧字段，
+                # 并回填到新字段，点确定后落盘（一次性幂等迁移）。
+                value = str(self.data.get(legacy_key, "") or "")
+                section[key] = value
+            edit = QLineEdit(value)
             if "key" in key:
                 edit.setEchoMode(QLineEdit.Password)
-            edit.textChanged.connect(lambda v, k=key: self.data.__setitem__(k, v))
+            if key == "decision_model_key":
+                # 票据 08：Key 只从 AGNES_API_KEY 环境变量读，绝不写配置/落盘。
+                edit.setReadOnly(True)
+                edit.setToolTip("由 AGNES_API_KEY 环境变量提供，不写入配置")
+                form.addRow(label, edit)
+                form.addRow("", self._note(
+                    "决策模型 Key 由 AGNES_API_KEY 环境变量提供；这里只做只读展示，"
+                    "不会写入配置、不会落盘。"))
+                self._edits[key] = edit
+                continue
+            edit.textChanged.connect(
+                lambda v, k=key: _config_for(k).__setitem__(k, v))
             self._edits[key] = edit
             form.addRow(label, edit)
+        self.short_source_group = QButtonGroup(w)
+        self.short_source_group.setExclusive(True)
+        self.short_source_local = QRadioButton("本地分类器（正则、离线、零 token）")
+        self.short_source_decision = QRadioButton("决策模型（Agnes SystemOne、需联网）")
+        self.short_source_group.addButton(self.short_source_local, 0)
+        self.short_source_group.addButton(self.short_source_decision, 1)
+        self.short_source_local.toggled.connect(
+            lambda checked: checked and self._set_short_source("local_classifier"))
+        self.short_source_decision.toggled.connect(
+            lambda checked: checked and self._set_short_source("decision_model"))
+        form.addRow("短内容初判分类来源", self.short_source_local)
+        form.addRow("", self.short_source_decision)
+        form.addRow(self._note(
+            "只决定 ≤80 字符短内容的初判分类来源；80–2000 段三分流与诊断分类仍用本地分类器。"
+            "两者互斥，打开一个会自动关掉另一个。"))
+
         self.vision_enabled_check = QCheckBox(
             "启用图片识别（截图/复制图片时进入图片查询方式，选模板后才识别）")
         self.vision_enabled_check.setChecked(
             bool((self.data.get("image") or {}).get("vision_enabled", True)))
         self.vision_enabled_check.toggled.connect(self._set_vision_enabled)
         form.addRow(self.vision_enabled_check)
-        self.auto_continue_check = QCheckBox(
-            "识别后自动用默认方式再解释一遍（默认关：先看这次识别的结果，"
-            "要不要继续由你决定；开了则一次点击走完）")
-        self.auto_continue_check.setChecked(
-            bool((self.data.get("image") or {}).get("auto_continue", False)))
-        self.auto_continue_check.toggled.connect(self._set_auto_continue)
-        form.addRow(self.auto_continue_check)
         self.popup_max_mb_spin = QSpinBox()
         self.popup_max_mb_spin.setRange(0, 64)
         self.popup_max_mb_spin.setSpecialValueText("不限制")
@@ -1062,24 +1407,42 @@ class SettingsDialog(QDialog):
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setSpacing(10)
+
+        # v14 票据 30：一个平铺 JSON 框管 instructions + 类别；字段仍分开存、
+        # 各自生效；下面的保存/派生/dirty 门控逻辑一律不动，只换框与说明。
+        layout.addWidget(self._section_title("决策模型配置"))
+        layout.addWidget(self._note(
+            '决策模型配置：这一个框管两件事。\n'
+            '① 第一行 "_instructions" 管"怎么判"：改引号里的文字就能改判别指令。\n'
+            '② 其余每行 "类别名": "判别描述" 管"有哪些类"：新增一行＝新增一个类别（模板页自动生成同名派生模板，使用默认通用结构化模板，可再改）；删掉一行＝连带删掉那个模板；改判别描述＝只改变决策模型按什么判断，不改模板文案。含「通用解析」兜底，别删。\n'
+            '删掉 "_instructions" 这一行或留空 → 保存后回退内置默认指令，不会写死进配置。\n'
+            '写错 JSON 格式只会提示、不会保存。改完点「保存并派生模板」，再点右下角「确定」才真正存盘。'))
+        # ADR-010 / FR-024~026：B（决策模型类别 JSON）仍是唯一事实源；
+        # 平铺结构只是在框首多放一行 instructions，拆行在 apply 处完成。
+        self.decision_model_json_edit = QPlainTextEdit()
+        self.decision_model_json_edit.setObjectName("decisionModelJsonEdit")
+        self.decision_model_json_edit.setPlainText(json.dumps(
+            self._flat_decision_json(self.data), ensure_ascii=False, indent=2))
+        layout.addWidget(self.decision_model_json_edit, 1)
+        # 票据21：与 routes 框同理，只有用户真编辑才置 dirty。
+        self._decision_model_json_user_edited = False
+        self.decision_model_json_edit.textChanged.connect(
+            self._mark_decision_model_json_dirty)
+        self.decision_model_json_apply = QPushButton("保存并派生模板")
+        self.decision_model_json_apply.clicked.connect(
+            self._apply_decision_model_json)
+        layout.addWidget(self.decision_model_json_apply)
+
         layout.addWidget(self._section_title("拦截规则"))
         layout.addWidget(self._note(
-            "勾选＝拦截（不弹窗、不发请求），取消勾选＝放行。"
-            "标注「固定」的项是硬性上限，不可关闭；选中一行可以改它的命中方式。"))
-        self.policy_tree = QTreeWidget()
-        self.policy_tree.setColumnCount(3)
-        self.policy_tree.setHeaderLabels(["规则", "说明", "拦截"])
-        self.policy_tree.setRootIsDecorated(False)
-        self.policy_tree.setAlternatingRowColors(False)   # 一体化：不要斑马纹
-        self.policy_tree.setUniformRowHeights(True)
-        header = self.policy_tree.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.policy_tree.currentItemChanged.connect(self._on_policy_selected)
-        self.policy_tree.itemChanged.connect(self._on_policy_item_changed)
-        self.policy_rows: dict[str, QTreeWidgetItem] = {}
-        layout.addWidget(self.policy_tree, 1)
+            "开关＝拦截（不弹窗、不发请求），关闭＝放行。悬停卡片看完整说明，"
+            "点选卡片编辑命中方式；标「固定」的是硬性上限，不可关闭。"))
+        self.policy_cards = QWidget()
+        cards_layout = QVBoxLayout(self.policy_cards)
+        cards_layout.setContentsMargins(0, 0, 0, 0)
+        cards_layout.setSpacing(SPACING_XS)
+        self.policy_card_widgets: dict[str, PolicyRuleCard] = {}
+        layout.addWidget(self.policy_cards, 1)
 
         button_row = QHBoxLayout()
         add_rule = QPushButton("＋ 新增规则")
@@ -1088,6 +1451,11 @@ class SettingsDialog(QDialog):
         del_rule = QPushButton("删除选中")
         del_rule.clicked.connect(self._delete_policy_rule)
         button_row.addWidget(del_rule)
+        self.policy_undo_button = QPushButton("撤销删除")
+        self.policy_undo_button.setObjectName("policyUndo")
+        self.policy_undo_button.setVisible(False)
+        self.policy_undo_button.clicked.connect(self._undo_policy_delete)
+        button_row.addWidget(self.policy_undo_button)
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
@@ -1119,57 +1487,65 @@ class SettingsDialog(QDialog):
 
         self._current_policy_id = ""
         self._loading_policy = False
+        self._last_deleted_policy = None
         self._populate_policy_table()
         return w
 
     def _populate_policy_table(self) -> None:
-        self.policy_tree.blockSignals(True)
-        self.policy_tree.clear()
-        self.policy_rows = {}
+        """按规则数据重建卡片列表（方法名沿用，兼容既有调用方）。"""
+        layout = self.policy_cards.layout()
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self.policy_card_widgets = {}
         rules = self.data.get("policy", {}).get("rules", {})
         for rule_id, rule in rules.items():
-            label = str(rule.get("label") or rule_id)
-            desc = str(rule.get("description", ""))
-            item = QTreeWidgetItem([label, desc, ""])
-            item.setToolTip(0, f"{label}（{rule_id}）")
-            item.setToolTip(1, desc)
-            item.setData(0, Qt.UserRole, str(rule_id))
+            rid = str(rule_id)
             locked = bool(rule.get("locked", False))
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            enabled = rule.get("enabled", True) is not False or locked
-            item.setCheckState(2, Qt.Checked if enabled else Qt.Unchecked)
-            if locked:
-                item.setToolTip(2, "硬性上限，不可关闭")
-            self.policy_tree.addTopLevelItem(item)
-            self.policy_rows[str(rule_id)] = item
-        self.policy_tree.blockSignals(False)
-        if self.policy_tree.topLevelItemCount():
-            self.policy_tree.setCurrentItem(self.policy_tree.topLevelItem(0))
+            card = PolicyRuleCard(
+                rid,
+                rule.get("label") or rid,
+                rule.get("description", ""),
+                rule.get("enabled", True) is not False or locked,
+                locked,
+                self.policy_cards,
+            )
+            card.toggled_rule.connect(self._on_policy_item_changed)
+            card.selected.connect(self._on_policy_selected)
+            card.navigate.connect(self._on_policy_navigate)
+            layout.addWidget(card)
+            self.policy_card_widgets[rid] = card
+        if self.policy_card_widgets:
+            first = self._current_policy_id or next(iter(self.policy_card_widgets))
+            self._on_policy_selected(first)
 
-    def _on_policy_item_changed(self, item: QTreeWidgetItem,
-                                column: int) -> None:
-        """勾选＝拦截，取消勾选＝放行；locked 项不可改。"""
-        if column != 2:
-            return
-        rid = str(item.data(0, Qt.UserRole) or "")
+    def _on_policy_item_changed(self, rid: str, checked=None) -> None:
+        """开关＝启用该规则拦截；locked 规则的开关永远弹回开启。"""
         rule = self.data.get("policy", {}).get("rules", {}).get(rid)
         if rule is None:
             return
+        card = self.policy_card_widgets.get(rid)
         if rule.get("locked", False):
-            # 硬性上限：点了也弹回勾选状态，不写入草稿
-            self.policy_tree.blockSignals(True)
-            item.setCheckState(2, Qt.Checked)
-            self.policy_tree.blockSignals(False)
+            if card is not None:
+                card.toggle.blockSignals(True)
+                card.toggle.setChecked(True)
+                card.toggle.blockSignals(False)
             return
-        rule["enabled"] = item.checkState(2) == Qt.Checked
+        rule["enabled"] = bool(checked)
 
-    def _on_policy_selected(self, current: QTreeWidgetItem | None,
-                            _previous: QTreeWidgetItem | None) -> None:
-        if current is None:
+    def _on_policy_selected(self, rid: str, *args) -> None:
+        """点选卡片 → 载入它的编辑表单，并高亮当前卡片。"""
+        rules = self.data.get("policy", {}).get("rules", {})
+        rid = str(rid or "")
+        if rid not in rules:
             return
-        rid = str(current.data(0, Qt.UserRole))
         self._current_policy_id = rid
-        rule = self.data["policy"]["rules"].get(rid, {})
+        for card in self.policy_card_widgets.values():
+            card.set_selected(card.rule_id == rid)
+        rule = rules[rid]
         self._loading_policy = True
         self.policy_detector.setCurrentText(str(rule.get("detector", "regex")))
         self.policy_pattern.setText(str(rule.get("pattern") or ""))
@@ -1177,6 +1553,16 @@ class SettingsDialog(QDialog):
         self.policy_desc.setText(str(rule.get("description", "")))
         self._loading_policy = False
         self._sync_policy_fields()
+
+    def _on_policy_navigate(self, rid: str, delta: int) -> None:
+        """方向键在卡片间移动焦点与选中态，键盘也能逐条编辑。"""
+        ids = list(self.policy_card_widgets)
+        if rid not in ids:
+            return
+        index = max(0, min(len(ids) - 1, ids.index(rid) + delta))
+        target = ids[index]
+        self._on_policy_selected(target)
+        self.policy_card_widgets[target].setFocus()
 
     def _sync_policy_fields(self) -> None:
         detector = self.policy_detector.currentText()
@@ -1195,10 +1581,11 @@ class SettingsDialog(QDialog):
         rule["feature"] = self.policy_feature.text().strip() or None
         rule["description"] = self.policy_desc.text()
         self._sync_policy_fields()
-        current = self.policy_tree.currentItem()
-        if current is not None:
-            current.setText(1, rule["description"])
-            current.setToolTip(1, rule["description"])
+        card = self.policy_card_widgets.get(rid)
+        if card is not None:
+            # 简述保持规则名，完整说明走 tooltip；悬停才展开，列表仍然紧凑。
+            card.setToolTip(rule["description"] or str(rule.get("label") or rid))
+            card.detail.setText(str(rule.get("description") or "")[:40])
 
     def _add_policy_rule(self) -> None:
         rules = self.data.setdefault("policy", {}).setdefault("rules", {})
@@ -1210,25 +1597,42 @@ class SettingsDialog(QDialog):
                       "level": "BLOCK", "enabled": True,
                       "description": "新规则：命中即不弹窗"}
         self._populate_policy_table()
-        for i in range(self.policy_tree.topLevelItemCount()):
-            item = self.policy_tree.topLevelItem(i)
-            if item.data(0, Qt.UserRole) == rid:
-                self.policy_tree.setCurrentItem(item)
-                return
+        self._on_policy_selected(rid)
 
     def _delete_policy_rule(self) -> None:
         rid = getattr(self, "_current_policy_id", "")
-        if not rid:
+        rules = self.data.setdefault("policy", {}).setdefault("rules", {})
+        if not rid or rid not in rules:
             return
-        self.data["policy"]["rules"].pop(rid, None)
-        # 墓碑：deep_merge 以出厂规则为底，会把删掉的键原样补回来
         policy = self.data.setdefault("policy", {})
+        self._last_deleted_policy = (
+            rid,
+            copy.deepcopy(rules[rid]),
+            copy.deepcopy(policy.get("removed_rules") or []),
+        )
+        rules.pop(rid, None)
+        # 墓碑：deep_merge 以出厂规则为底，会把删掉的键原样补回来
         removed = set(policy.get("removed_rules") or ())
         removed.add(rid)
         policy["removed_rules"] = sorted(removed)
         self._current_policy_id = ""
         self._populate_policy_table()
-        self.legacy_hint.setText(f"已删除拦截规则 {rid}。")
+        # 反馈必须出现在当前可见的位置：status_hint 跨页签常驻。
+        self.status_hint.setText(f"已删除拦截规则 {rid}，可点「撤销删除」恢复。")
+        self.policy_undo_button.setVisible(True)
+
+    def _undo_policy_delete(self) -> None:
+        if not self._last_deleted_policy:
+            return
+        rid, rule, removed = self._last_deleted_policy
+        policy = self.data.setdefault("policy", {})
+        policy.setdefault("rules", {})[rid] = rule
+        policy["removed_rules"] = removed
+        self._last_deleted_policy = None
+        self.status_hint.setText("")
+        self.policy_undo_button.setVisible(False)
+        self._populate_policy_table()
+        self._on_policy_selected(rid)
 
     # -- 搜索 --------------------------------------------------------------
     def _build_search(self) -> QWidget:
@@ -1354,13 +1758,12 @@ class SettingsDialog(QDialog):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
     def _legacy_folder_map(self) -> dict[str, str]:
-        """英文 route id → 中文分类名（旧版本用裸 id 建过文件夹）。"""
-        try:
-            routes = load_defaults().routes
-        except Exception:               # 配置异常时不影响设置窗口
-            return {}
-        return {rid: str(pack.get("label")) for rid, pack in routes.items()
-                if pack.get("label") and str(pack.get("label")) != rid}
+        """旧英文 id 目录 → 中文分类名（旧版本用裸 id 建过文件夹）。
+
+        票据 17 后 route id 本身就是中文，不能再从 routes 推导映射；
+        必须显式使用旧 id 映射表，否则老用户的知识库目录无法整理。
+        """
+        return dict(LEGACY_ROUTE_ID_MAP)
 
     def _tidy_library_folders(self) -> None:
         """把英文 id 目录里的笔记并到中文分类，空的旧目录顺手删掉。"""
@@ -1411,7 +1814,7 @@ class SettingsDialog(QDialog):
                 "目录还是空的：成功查询一次后会自动按分类建文件夹。")
             return
         note = f"共 {len(rows)} 个分类、{total} 篇笔记。"
-        note += "「通用」是自由输入，「通用解析」是 general 模板。"
+        note += "「通用」是自由输入，「通用解析」是 通用解析 模板。"
         if legacy:
             note += f" 其中 {('、'.join(legacy))} 是旧版本留下的英文目录，可点「整理旧分类」合并。"
         self.library_hint.setText(note)
@@ -1423,11 +1826,8 @@ class SettingsDialog(QDialog):
         layout.setSpacing(8)
 
         intro = QLabel(
-            "每次查询成功后，结果会写成一篇 Markdown：\n"
-            "    <库根> / <分类> / 日期_标题.md\n"
-            "分类取「① 提示词模板」的名称（LaTeX 公式 / 化学物质 / 英语单词…），"
-            "自定义查询落在「通用」，追问会追加到同一天的同一篇笔记。"
-            "同名文件直接覆盖，Obsidian / Logseq 可直接把库根添加为仓库。")
+            "查询结果按「库根/分类/日期_标题.md」存成 Markdown，可用 Obsidian / Logseq 打开。\n"
+            "自定义查询归「通用」，追问追加到同日笔记。")
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
@@ -1577,6 +1977,9 @@ class SettingsDialog(QDialog):
     def _sync(self) -> None:
         self.font_spin.setValue(int(self.data.get("desktop_font_size", 14)))
         self.dark_check.setChecked(bool(self.data.get("desktop_dark_theme", False)))
+        source = Settings(self.data).short_classifier_source
+        self.short_source_local.setChecked(source == "local_classifier")
+        self.short_source_decision.setChecked(source == "decision_model")
         self._rebuild_switches()
         self.persistent_check.setChecked(
             bool(self.data.get("desktop_persistent_window", True)))
@@ -1605,6 +2008,8 @@ class SettingsDialog(QDialog):
             self.status_hint.setText("⚠ " + conflict)
             return False
         self.data["hotkeys"] = hotkeys
+        if not self._apply_pending_json_edits():
+            return False
         # 图片提示词的唯一编辑入口在「其他视角」页（写入 route_prompts），
         # desktop_vision_prompt 仅作模板为空时的兜底，不再由设置页覆盖。
         errors = validate(Settings(self.data))

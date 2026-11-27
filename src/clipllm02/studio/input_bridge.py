@@ -13,6 +13,11 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 
+def bridge_input_kind() -> str:
+    """输入子进程只回传文字；模态恒为 text，必经本地正则关卡（FR-001）。"""
+    return "text"
+
+
 class InputBridge(QObject):
     text_ready = Signal(str, str)          # (用途, 文本)
     settings_ready = Signal(dict)          # 用户保存的完整配置

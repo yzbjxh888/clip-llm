@@ -46,7 +46,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "chem_substance",
+      "primary_route": "化学物质",
       "prompt_override": "",
       "includes": [],
       "default_format": "static",
@@ -79,7 +79,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "chem_substance",
+      "primary_route": "化学物质",
       "prompt_override": "只讲命名与念法，不讲性质。只输出这些字段：\n- title：字符串，式子或物质的简短名称\n- iupac：字符串，IUPAC 名称\n- chinese：字符串，中文系统命名\n- common：数组，字符串，常用俗名\n- readings：数组，每项 {\"part\": \"式子片段，反斜杠双写\", \"reading\": \"怎么念\", \"stress\": \"重音位置\"}\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -110,7 +110,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "chem_substance",
+      "primary_route": "化学物质",
       "prompt_override": "只讲典型反应，不讲性质。只输出这些字段：\n- title：字符串，物质的简短名称\n- reactions：数组，每项 {\"equation\": \"配平后的方程式，反斜杠双写\", \"conditions\": \"温度/催化剂/溶剂\", \"type\": \"反应类型\"}\n- conservation：字符串，原子守恒核对\n- uncertain：数组，字符串，条件不确定之处，没有给空数组\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -142,7 +142,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "chem_substance",
+      "primary_route": "化学物质",
       "prompt_override": "只做物质辨析，不解释该物质本身。只输出这些字段：\n- title：字符串，物质的简短名称\n- contrasts：数组，每项 {\"substance\": \"相近物质\", \"composition\": \"组成差异\", \"structure\": \"结构差异\", \"property\": \"关键性质差异\"}\n- criterion：字符串，可判定的区分条件\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "table",
@@ -174,7 +174,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "chinese",
+      "primary_route": "中文词语",
       "prompt_override": "",
       "includes": [],
       "default_format": "static",
@@ -207,7 +207,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "chinese",
+      "primary_route": "中文词语",
       "prompt_override": "不改变信息量，把内容改写得更简洁清楚。只输出这些字段：\n- title：字符串，内容的简短标题\n- rewritten：字符串，改写后的完整版本\n- changes：数组，每项 {\"original\": \"原句片段\", \"revised\": \"改写后\", \"reason\": \"修改理由\"}\n- kept：数组，字符串，明确保留未改动的关键信息\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -240,7 +240,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "chinese_paragraph",
+      "primary_route": "中文段落",
       "prompt_override": "",
       "includes": [],
       "default_format": "static",
@@ -273,7 +273,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "chinese_question",
+      "primary_route": "中文答疑",
       "prompt_override": "",
       "includes": [],
       "default_format": "static",
@@ -305,7 +305,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "chinese_sentence",
+      "primary_route": "中文句解",
       "prompt_override": "",
       "includes": [],
       "default_format": "static",
@@ -337,7 +337,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "code",
+      "primary_route": "代码",
       "prompt_override": "",
       "includes": [],
       "default_format": "static",
@@ -370,7 +370,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "code",
+      "primary_route": "代码",
       "prompt_override": "只给更清晰的等价实现，不解释原代码在做什么。只输出这些字段：\n- title：字符串，改动主题的简短标题\n- rewritten：字符串，改写后的完整代码，换行用 \\\\n\n- changes：数组，每项 {\"before\": \"原写法\", \"after\": \"新写法\", \"reason\": \"为什么更清楚\"}\n- behavior：字符串，确认行为保持不变的依据\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -403,7 +403,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "code",
+      "primary_route": "代码",
       "prompt_override": "只做复杂度分析，不解释功能。只输出这些字段：\n- title：字符串，简短标题\n- time：字符串，时间复杂度与推导\n- space：字符串，空间复杂度与推导\n- worst_case：字符串，最坏情况与触发条件\n- bottlenecks：数组，每项 {\"location\": \"瓶颈位置\", \"reason\": \"为什么是瓶颈\"}\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -436,7 +436,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "code",
+      "primary_route": "代码",
       "prompt_override": "只给逐行注释，不改代码。只输出这些字段：\n- title：字符串，简短标题\n- annotated：数组，每项 {\"line\": \"代码行原样\", \"comment\": \"意图说明，不复述语法\"}\n- pitfalls：数组，字符串，注释时发现的易误解处\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -469,7 +469,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "code",
+      "primary_route": "代码",
       "prompt_override": "只给测试用例，不改代码。只输出这些字段：\n- title：字符串，简短标题\n- cases：数组，每项 {\"kind\": \"正常/边界/异常\", \"input\": \"输入\", \"expected\": \"期望输出\", \"why\": \"覆盖点\"}\n- framework：字符串，推荐的最小测试框架与理由\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "table",
@@ -503,7 +503,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "code",
+      "primary_route": "代码",
       "prompt_override": "只查安全风险，不评价代码风格。只输出这些字段：\n- title：字符串，简短标题\n- risks：数组，每项 {\"kind\": \"注入/越权/反序列化/信息泄露等\", \"location\": \"位置\", \"impact\": \"后果\", \"fix\": \"修复建议\"}\n- severity：字符串，整体风险等级与理由\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -536,7 +536,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "en_phrase",
+      "primary_route": "英语短语",
       "prompt_override": "",
       "includes": [],
       "default_format": "static",
@@ -569,7 +569,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "en_phrase",
+      "primary_route": "英语短语",
       "prompt_override": "只讲语体与正式度，不讲词义。只输出这些字段：\n- title：字符串，词组本身\n- register：字符串，正式度标签（口语/中性/书面/古旧）\n- tone：字符串，语气（褒/贬/中性/讽刺）\n- avoid_when：数组，字符串，不宜使用的场合\n- alternatives：数组，每项 {\"level\": \"正式度\", \"phrase\": \"替换说法\"}\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -603,7 +603,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "en_phrase",
+      "primary_route": "英语短语",
       "prompt_override": "只讲文化语境与使用禁忌，不讲字面义。只输出这些字段：\n- title：字符串，词组本身\n- context：字符串，社会语境，80 字以内\n- habits：数组，字符串，英语世界里的实际使用习惯\n- pitfalls：数组，每项 {\"scene\": \"场景\", \"risk\": \"中文母语者可能的文化错位或禁忌\"}\n- unverifiable：数组，字符串，无法考证的部分，没有给空数组\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -637,7 +637,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "en_phrase",
+      "primary_route": "英语短语",
       "prompt_override": "只讲直译会错在哪，不讲词义本身。只输出这些字段：\n- title：字符串，词组本身\n- literal_trap：字符串，最容易被直译成的中文，以及为什么错\n- correct：数组，每项 {\"translation\": \"正确译法\", \"context\": \"适用语境\"}\n- similar_traps：数组，每项 {\"phrase\": \"同类易译错的习语\", \"note\": \"错法\"}\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -671,7 +671,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "en_word",
+      "primary_route": "英语单词",
       "prompt_override": "",
       "includes": [],
       "default_format": "static",
@@ -704,7 +704,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "en_word",
+      "primary_route": "英语单词",
       "prompt_override": "只讲这个词怎么读，不讲词义。只输出这些字段：\n- title：字符串，单词本身\n- phonetic：字符串，国际音标，用斜杠包裹，如 /kənˈstrʌkt/\n- syllables：字符串，音节划分，用连字符连接，如 con-struct\n- stress：字符串，重音位置，一句话说明\n- variants：数组，每项 {\"region\": \"英/美\", \"ipa\": \"音标\"}，无差异给空数组\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -735,7 +735,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "en_word",
+      "primary_route": "英语单词",
       "prompt_override": "挑两三个最易混淆的近义词做对照。只输出这些字段：\n- title：字符串，单词本身\n- contrasts：数组，每项 {\"word\": \"近义词\", \"focus\": \"语义侧重\", \"register\": \"语体\", \"collocation\": \"典型搭配\"}\n- choose_when：数组，每项 {\"use\": \"该用哪个词\", \"condition\": \"可判定的选用条件\"}\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "table",
@@ -769,7 +769,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "en_word",
+      "primary_route": "英语单词",
       "prompt_override": "只讲拼写与词形，不讲词义。只输出这些字段：\n- title：字符串，单词本身\n- confusions：数组，每项 {\"wrong\": \"常见错误写法\", \"right\": \"正确写法\", \"why\": \"错因\"}\n- lookalikes：数组，每项 {\"word\": \"易混词\", \"difference\": \"区分要点\"}\n- forms：数组，每项 {\"form\": \"词形变化\", \"note\": \"规则或例外\"}\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -798,7 +798,7 @@
         "mixed"
       ],
       "applicable": null,
-      "primary_route": "general",
+      "primary_route": "通用解析",
       "prompt_override": "",
       "includes": [],
       "default_format": "static",
@@ -827,7 +827,7 @@
         "mixed"
       ],
       "applicable": null,
-      "primary_route": "general",
+      "primary_route": "通用解析",
       "prompt_override": "只做跨领域类比，不重复解释原内容。只输出这些字段：\n- title：字符串，简短标题\n- analogy：字符串，另一个领域里结构相似的现象\n- mapping：数组，每项 {\"source\": \"原内容要素\", \"target\": \"类比中的对应物\"}\n- breaks：数组，字符串，类比失效的地方\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -857,7 +857,7 @@
         "mixed"
       ],
       "applicable": null,
-      "primary_route": "general",
+      "primary_route": "通用解析",
       "prompt_override": "只做批判性检验，不复述内容。只输出这些字段：\n- title：字符串，简短标题\n- assumptions：数组，每项 {\"claim\": \"想当然的说法\", \"problem\": \"为什么会反直觉或站不住\"}\n- needed_evidence：数组，每项 {\"claim\": \"待检结论\", \"evidence\": \"需要什么证据\"}\n- survive：数组，字符串，经得起检验的部分\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -886,7 +886,7 @@
         "mixed"
       ],
       "applicable": null,
-      "primary_route": "image",
+      "primary_route": "图片识别",
       "prompt_override": "请找出图片中的关键内容并返回标注框。严格按 JSON 输出 boxes 数组，每项含 x、y、w、h、label；坐标使用 0 到 1 的归一化值。",
       "includes": [],
       "default_format": "annotate",
@@ -915,7 +915,7 @@
         "mixed"
       ],
       "applicable": null,
-      "primary_route": "image",
+      "primary_route": "图片识别",
       "prompt_override": "请理解并解释这张图片。只输出一个 JSON 对象，只含有内容的字段；没有内容就省略整个字段，不要输出空值或占位符，也不要把同样的内容再用「- 字段: 值」列一遍。\n- type：图片类型（机制图 / 统计图 / 结构图 / 公式 / 界面截图 / 其他）\n- summary：这张图在讲什么，2-4 句：先说结论，再说结构\n- key_points：数组，3-6 条，每条一句话：图中要素之间怎么关联、这张图想说明什么\n- components：数组，仅当图中确有明确要素划分时给出，每项 {\"name\": \"要素\", \"role\": \"它在图中的位置或作用\"}\n- notes：数组，外文术语的中文对照或无法辨认的部分",
       "includes": [],
       "default_format": "static",
@@ -943,7 +943,7 @@
         "mixed"
       ],
       "applicable": null,
-      "primary_route": "image",
+      "primary_route": "图片识别",
       "prompt_override": "请识别图片中的文字和数学公式。公式用 LaTeX 表示，行内公式用 $...$ 包裹，独立公式用 $$...$$ 包裹并单独占一行。保留原有阅读顺序，只返回识别结果，不要添加额外解释。",
       "includes": [],
       "default_format": "static",
@@ -971,7 +971,7 @@
         "mixed"
       ],
       "applicable": null,
-      "primary_route": "image",
+      "primary_route": "图片识别",
       "prompt_override": "请提取图片中的表格与数据，还原行列结构与数值。严格按 JSON 输出，不要添加解释。",
       "includes": [],
       "default_format": "table",
@@ -1005,7 +1005,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "latex",
+      "primary_route": "LaTeX 公式",
       "prompt_override": "",
       "includes": [],
       "default_format": "static",
@@ -1038,7 +1038,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "latex",
+      "primary_route": "LaTeX 公式",
       "prompt_override": "只讲怎么念，不讲含义、推导或物理意义。只输出这些字段：\n- title：字符串，式子的简短名称\n- symbols：数组，每项 {\"symbol\": \"符号原样，反斜杠双写，如 \\\\psi\", \"reading\": \"口头读法\"}\n- read_aloud：字符串，一整句连贯读法\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -1069,11 +1069,11 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "latex",
+      "primary_route": "LaTeX 公式",
       "prompt_override": "从已给式子出发逐步推导，不重复解释符号。只输出这些字段：\n- title：字符串，式子的简短名称\n- derivation：数组，每项 {\"step\": 序号, \"expression\": \"该步结果，反斜杠双写\", \"justification\": \"所用恒等式或定理\", \"condition\": \"成立条件\"}\n- conclusion：字符串，一句话结论\n- caveats：数组，字符串，跳步或近似之处，没有给空数组\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [
         {
-          "route_id": "general",
+          "route_id": "通用解析",
           "sections": [
             "key_points"
           ],
@@ -1108,7 +1108,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "latex",
+      "primary_route": "LaTeX 公式",
       "prompt_override": "只做量纲分析，不做推导。只输出这些字段：\n- title：字符串，式子的简短名称\n- quantities：数组，每项 {\"symbol\": \"符号，反斜杠双写\", \"quantity\": \"物理量\", \"dimension\": \"量纲如 L T^-1\", \"unit\": \"SI 单位\"}\n- consistency：字符串，等号两侧是否自洽的判定与理由\n- conditions：数组，字符串，式子成立的前提\n- failures：数组，字符串，常见失效情形\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "table",
@@ -1140,7 +1140,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "latex",
+      "primary_route": "LaTeX 公式",
       "prompt_override": "给出与原式等价的若干变形，不做逐步推导。只输出这些字段：\n- title：字符串，式子的简短名称\n- transforms：数组，每项 {\"form\": \"等价变形，反斜杠双写\", \"identity\": \"所用恒等式或定理\", \"condition\": \"适用条件\"}\n- notes：数组，字符串，易错或需注意之处\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -1173,7 +1173,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "latex",
+      "primary_route": "LaTeX 公式",
       "prompt_override": "只做数值代入，不做符号推导。只输出这些字段：\n- title：字符串，式子的简短名称\n- parameters：数组，每项 {\"symbol\": \"符号，反斜杠双写\", \"value\": \"取值\", \"unit\": \"单位\", \"reason\": \"取值合理性\"}\n- steps：数组，每项 {\"step\": 序号, \"calculation\": \"该步算式，反斜杠双写\", \"result\": \"中间结果\"}\n- result：字符串，最终值与单位\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -1206,7 +1206,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "latex",
+      "primary_route": "LaTeX 公式",
       "prompt_override": "只用类比和图像讲直觉，不写公式推导。只输出这些字段：\n- title：字符串，式子的简短名称\n- idea：字符串，一句话说清这个式子在讲什么\n- analogy：字符串，一个具体可复述的类比或图像\n- implications：数组，字符串，由这个直觉能推出的结论\n- limits：数组，字符串，类比的失效边界\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -1239,7 +1239,7 @@
         "op": "eq",
         "value": true
       },
-      "primary_route": "latex",
+      "primary_route": "LaTeX 公式",
       "prompt_override": "给出更一般的形式与退化关系，不做推导。只输出这些字段：\n- title：字符串，式子的简短名称\n- general_form：字符串，更一般的形式，反斜杠双写\n- extra_conditions：数组，字符串，推广所需的额外条件\n- special_cases：数组，每项 {\"case\": \"特例\", \"relation\": \"与原式的退化关系\"}\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -1281,7 +1281,7 @@
           }
         ]
       },
-      "primary_route": "latex",
+      "primary_route": "LaTeX 公式",
       "prompt_override": "只做概念辨析，不解释原式。只输出这些字段：\n- title：字符串，被辨析的量或式子的简短名称\n- contrasts：数组，每项 {\"item\": \"相近量\", \"definition\": \"定义差异\", \"unit\": \"单位差异\", \"measurement\": \"测量方式差异\"}\n- criterion：字符串，可判定的区分条件\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",
@@ -1323,7 +1323,7 @@
           }
         ]
       },
-      "primary_route": "latex",
+      "primary_route": "LaTeX 公式",
       "prompt_override": "只给证据，不做推导。只输出这些字段：\n- title：字符串，关系式或结论的简短名称\n- evidence：数组，每项 {\"experiment\": \"关键实验或观测\", \"method\": \"测量思路\", \"precision\": \"精度或量级\", \"year\": \"年份，未知留空字符串\"}\n- status：字符串，证据强度与局限\n- unverifiable：数组，字符串，无法考证的部分，没有给空数组\n不要输出其它字段；LaTeX 里的反斜杠必须写成 \\\\。",
       "includes": [],
       "default_format": "static",

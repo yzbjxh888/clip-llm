@@ -12,9 +12,13 @@ import json
 import os
 from pathlib import Path
 
-from ..settings import Settings, load_defaults, load_settings
+from ..settings import (Settings, load_defaults, load_settings,
+                        mark_decision_model_source_routes,
+                        migrate_legacy_route_ids, migrate_model_config,
+                        restore_derived_route_templates,
+                        restore_factory_route_templates)
 
-CONFIG_VERSION = 8
+CONFIG_VERSION = 13
 DEFAULT_DESKTOP_DUP_TTL = 1
 # 历次出厂搜索源的 id。老配置里若只有这些（说明用户没自定义过），升级时
 # 直接换成最新出厂值；含 custom.* 等自定义项则原样保留。
@@ -146,12 +150,24 @@ def load_config() -> Settings:
     if not isinstance(user, dict):
         return settings_from_data(factory)
 
-    changed = user.get("config_version") != CONFIG_VERSION
+    # v3 票据 17：旧英文类别/路由 id → 中文 id，幂等且随写盘持久化。
+    # v7 票据 22：新模型字段空时用旧 desktop_* 回填，同样幂等随写盘持久化。
+    # v9 票据 25：被污染（空/占位）的出厂模板各归各位回填，随版本迁移写盘。
+    # v10 票据 26：新增（B 派生）路由的通用 fields/sections/prompt 补齐，随版本迁移写盘。
+    # v11 票据 27：所有受 B 约束的路由补独立标记 source_from_decision_model（11→12）。
+    ids_migrated = migrate_legacy_route_ids(user)
+    model_migrated = migrate_model_config(user)
+    templates_restored = restore_factory_route_templates(user)
+    derived_templates_restored = restore_derived_route_templates(user)
+    model_sources_marked = mark_decision_model_source_routes(user)
+    changed = (user.get("config_version") != CONFIG_VERSION
+               or ids_migrated or model_migrated or templates_restored
+               or derived_templates_restored or model_sources_marked)
     # 版本已是最新但缺键的旧配置也必须补齐默认；此前 setdefault 被关在
     # `if changed` 里，导致去重时间回退到 settings_from_data 的旧默认值。
     for key in ("desktop_vision_prompt", "desktop_font_size",
                 "desktop_dark_theme", "desktop_new_query_in_new_tab",
-                "desktop_dup_ttl"):
+                "desktop_dup_ttl", "removed_intents"):
         if key not in user:
             user[key] = factory[key]
             changed = True
@@ -163,10 +179,6 @@ def load_config() -> Settings:
     if changed:
         user["intents"] = _merge_intents(factory, user)
         user["config_version"] = CONFIG_VERSION
-        # 识别结果不再自动续跑：关掉后点哪条图片查询方式就出哪条结果，
-        # 不会被默认的文本方式抢走，看起来像「点了没反应」。
-        user.setdefault("image", {})["auto_continue"] = bool(
-            (factory.get("image") or {}).get("auto_continue", False))
         # 搜索源随出厂值升级。老配置里若全是历次出厂项（没自定义过），
         # 直接用新出厂值；用户自己加过搜索源则原样保留。
         old = user.get("search_providers") or []
@@ -230,6 +242,17 @@ def settings_from_data(data: dict) -> Settings:
         rules = settings.policy.setdefault("rules", {})
         for rid in removed:
             rules.pop(rid, None)
+    # v16 票据 32：用户显式删除的出厂意图。deep_merge 以出厂配置为底，
+    # _merge_intents 又会按 id 把出厂意图补回，因此加载后按墓碑再删一次。
+    # 同时改 settings.data["intents"]，保证下次保存的写盘数据 = 运行期数据。
+    removed_intents = set(merged.get("removed_intents") or ())
+    if removed_intents:
+        settings.intents = tuple(
+            i for i in settings.intents if str(i.id) not in removed_intents)
+        settings.data["intents"] = [
+            i for i in (settings.data.get("intents") or ())
+            if not (isinstance(i, dict)
+                    and str(i.get("id")) in removed_intents)]
     for route_id, pack in (legacy.get("packs") or {}).items():
         if route_id in settings.routes and pack.get("prompt"):
             settings.routes[route_id]["prompt"] = pack["prompt"]

@@ -10,6 +10,7 @@ from dataclasses import replace
 
 from .classify import available_categories, classify_text
 from .features import evaluate_condition, extract_features
+from .policy import length_tier_of, short_tier_classification
 from .models import (
     Category, Classification, DomainCandidate, FeatureSet, InputEnvelope,
     IntentOption, MenuModel, MenuOption, PolicyResult, Preferences, Suggestion,
@@ -69,7 +70,7 @@ def vision_category(settings) -> str:
     for route_id, pack in (getattr(settings, "routes", None) or {}).items():
         if isinstance(pack, dict) and pack.get("vision"):
             return str(route_id)
-    return "image"
+    return "图片识别"
 
 
 def auto_followup_intent(menu, settings) -> str | None:
@@ -97,18 +98,6 @@ def vision_default_intent(settings) -> str | None:
         if intent.enabled and "image" in intent.domains:
             return intent.id
     return None
-
-
-def classify_intent(envelope: InputEnvelope, fs: FeatureSet,
-                    settings, classification=None) -> str | None:
-    """按类别初判结果给出该类别下的默认意图；不替用户提交。
-
-    ``classification`` 可由调用方传入（``Suggestion.classification``），
-    避免同一份输入被重复判定两次。
-    """
-    result = classification or classify_text(envelope.text or "", settings,
-                                             source=envelope.source)
-    return _pick_intent(settings, fs, (result.category, "general"))
 
 
 def resolve_domains(envelope: InputEnvelope, fs: FeatureSet,
@@ -210,7 +199,7 @@ def suggest(envelope: InputEnvelope, policy: PolicyResult,
     suggested = None
     if classification:
         suggested = _pick_intent(settings, fs,
-                                 (classification.category, "general"))
+                                 (classification.category, "通用解析"))
     if envelope.assets:
         # 默认高亮「设置 → 图片默认查询方式」，用户仍可在类别里换其他方式。
         suggested = vision_default_intent(settings) or suggested
@@ -250,6 +239,33 @@ def _intent_state(intent, suggestion: Suggestion, settings):
         if not pack or not pack.get("enabled", True):
             return False, f"引用路由 {inc.get('route_id')} 不可用"
     return True, ""
+
+
+DECISION_NO_RESULT_NOTICE = (
+    "决策模型初判无结果：本次不显示类别高亮，请手动选择查询方式，"
+    "或在设置页切换分类来源。")
+
+
+def suggest_with_short_source(envelope: InputEnvelope, policy: PolicyResult,
+                              settings, *, cancel=None) -> Suggestion:
+    """按 ``short_classifier_source`` 决定 ≤80 短段初判的类别来源。
+
+    决策模型失败时显式给出「无结果」提示，不回退本地正则（FR-020）；
+    中段、超长与图片输入保持原有本地初判路径。
+    """
+    base = suggest(envelope, policy, settings)
+    if (envelope.assets or not policy.allowed
+            or length_tier_of(len(envelope.text or "")) != "short_0_80"):
+        return base
+    if settings.short_classifier_source != "decision_model":
+        # 本地分类器沿用 suggest() 既有结果（含候选类别过滤），不重复判定。
+        return base
+    classified = short_tier_classification(envelope, settings, cancel=cancel)
+    if classified is not None:
+        return replace(base, classification=classified,
+                       suggested_route=classified.category)
+    return replace(base, classification=None, suggested_route=None,
+                   warnings=base.warnings + (DECISION_NO_RESULT_NOTICE,))
 
 
 def build_menu(suggestion: Suggestion, settings,
@@ -378,63 +394,79 @@ def build_menu(suggestion: Suggestion, settings,
 
     rec_ids: set[str] = set()
 
-    if suggestion.level == "LOW":
-        chips = tuple(DomainCandidate(
-            id=str(d["id"]), label=str(d.get("label", d["id"])), score=0.0,
-            evidence=("领域不明确，可手动选择",))
-            for d in settings.domains if str(d["id"]) not in disabled)
-        recommended = build_recommended()
-        rec_ids.update(o.intent.id for o in recommended)
-        others: list[MenuOption] = []
+    # v12（票据 28）：换领域下拉不再只列判定候选，而是列全部可用领域
+    # （排除被禁用与图片专用领域），保证 HIGH 单候选时也能手动改选。
+    # 判定项对象优先复用（保留其分数/证据），其余按 settings.domains 顺序新建。
+    judged = {c.id: c for c in suggestion.domain_candidates}
+    chip_list: list[DomainCandidate] = []
+    for d in settings.domains:
+        did = str(d["id"])
+        if did in disabled or did == "image":
+            continue
+        chip = judged.get(did)
+        if chip is None:
+            chip = DomainCandidate(
+                id=did, label=str(d.get("label", did)), score=0.0,
+                evidence=("领域不明确，可手动选择",))
+        chip_list.append(chip)
+    top_id = suggestion.top_domain
+    if top_id:
+        # 稳定排序：判定项置顶，其余保持 settings.domains 的顺序。
+        chip_list.sort(key=lambda c: 0 if c.id == top_id else 1)
+    chips = tuple(chip_list)
+
+    recommended = build_recommended()
+    rec_ids.update(o.intent.id for o in recommended)
+
+    # 其他视角是各查询路由都能用的公共提示词：无论初判置信度高低，
+    # 都优先显示 other_views.items（用户配置的中文通用视角）。
+    # 领域亲和仅在未配置时回退；B（决策模型类别）与 other_views 相互独立。
+    others: list[MenuOption] = []
+    other_views = settings.get("other_views") or {}
+    max_others = int(other_views.get("max_items", 6))
+    views = [
+        view for view in (other_views.get("items") or ())
+        if isinstance(view, dict) and view.get("enabled", True)
+        and str(view.get("id") or "").strip()
+        and (not view.get("domains") or "*" in view["domains"]
+             or (top_domain and top_domain in view["domains"]))
+    ]
+    if views:
+        # 通用视角：与提示词模板无关，设置里改完立即出现在「其他角度」
+        for view in views[:max_others]:
+            intent = IntentOption.from_other_view(view)
+            if intent is not None:
+                others.append(MenuOption(intent=intent, section="other"))
+    elif suggestion.level == "LOW":
+        # 未配置时回退：领域不明确时用现场构造的 chips
         for chip in chips[:4]:
             for opt in loose_pick(chip.id)[:1]:
                 others.append(MenuOption(intent=opt.intent, section="other"))
                 rec_ids.add(opt.intent.id)
     else:
-        chips = suggestion.domain_candidates
-        recommended = build_recommended()
-        rec_ids.update(o.intent.id for o in recommended)
-
-        others = []
-        other_views = settings.get("other_views") or {}
-        max_others = int(other_views.get("max_items", 6))
-        views = [
-            view for view in (other_views.get("items") or ())
-            if isinstance(view, dict) and view.get("enabled", True)
-            and str(view.get("id") or "").strip()
-            and (not view.get("domains") or "*" in view["domains"]
-                 or (top_domain and top_domain in view["domains"]))
-        ]
-        if views:
-            # 通用视角：与提示词模板无关，设置里改完立即出现在「其他角度」
-            for view in views[:max_others]:
-                intent = IntentOption.from_other_view(view)
-                if intent is not None:
-                    others.append(MenuOption(intent=intent, section="other"))
-        else:
-            # 未配置时回退到领域亲和候选（候选次之 → 亲和领域 → 其余领域）
-            other_domains: list[str] = []
-            seen = {top_domain} if top_domain else set()
-            for cand in suggestion.domain_candidates:
-                if cand.id not in seen:
-                    other_domains.append(cand.id)
-                    seen.add(cand.id)
-            for near in NEAR_DOMAINS.get(top_domain, ()):
-                if near not in seen and near not in disabled and near != "image":
-                    other_domains.append(near)
-                    seen.add(near)
-            for d in settings.domains:
-                did = str(d["id"])
-                if did in seen or did in ("*", "image"):
-                    continue
-                other_domains.append(did)
-                seen.add(did)
-            for did in other_domains[:3]:
-                for opt in loose_pick(did)[:per_domain]:
-                    others.append(MenuOption(intent=opt.intent, section="other"))
-                    rec_ids.add(opt.intent.id)
-                if len(others) >= max_others:
-                    break
+        # 未配置时回退到领域亲和候选（候选次之 → 亲和领域 → 其余领域）
+        other_domains: list[str] = []
+        seen = {top_domain} if top_domain else set()
+        for cand in suggestion.domain_candidates:
+            if cand.id not in seen:
+                other_domains.append(cand.id)
+                seen.add(cand.id)
+        for near in NEAR_DOMAINS.get(top_domain or "", ()):
+            if near not in seen and near not in disabled and near != "image":
+                other_domains.append(near)
+                seen.add(near)
+        for d in settings.domains:
+            did = str(d["id"])
+            if did in seen or did in ("*", "image"):
+                continue
+            other_domains.append(did)
+            seen.add(did)
+        for did in other_domains[:3]:
+            for opt in loose_pick(did)[:per_domain]:
+                others.append(MenuOption(intent=opt.intent, section="other"))
+                rec_ids.add(opt.intent.id)
+            if len(others) >= max_others:
+                break
 
     if menu.get("show_disabled_items") != "grayed":
         grayed = []

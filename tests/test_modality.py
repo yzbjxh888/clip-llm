@@ -109,5 +109,41 @@ class TestModalityArbiter(unittest.TestCase):
         self.assertEqual(env.query_hash, env.text_hash)
 
 
+class TestEntryModalityMarking(unittest.TestCase):
+    """T009/T011: 模态标记与图片正则豁免（schema.json input_kind / local_regex_applied）。"""
+
+    def setUp(self):
+        import clipllm02.modality as modality
+        from clipllm02 import run_flow
+        self.modality = modality
+        self.run_flow = run_flow
+        self.settings = load_defaults()
+        self.asset = MemoryAssetStore().put(PNG, "image/png")
+
+    def test_input_kind_for_text_is_text(self):
+        fn = getattr(self.modality, "input_kind_for", None)
+        self.assertIsNotNone(fn, "modality.py must define input_kind_for")
+        env = InputEnvelope.for_text("NaCl")
+        self.assertEqual(fn(env), "text")
+
+    def test_input_kind_for_image_is_image_screenshot(self):
+        fn = getattr(self.modality, "input_kind_for", None)
+        self.assertIsNotNone(fn, "modality.py must define input_kind_for")
+        env = InputEnvelope.for_image(self.asset)
+        self.assertEqual(fn(env), "image_screenshot")
+
+    def test_text_goes_through_local_regex_gate(self):
+        d = self.run_flow(InputEnvelope.for_text("NaCl"), self.settings)
+        self.assertEqual(d.input_kind, "text")
+        self.assertIs(d.local_regex_applied, True)
+
+    def test_image_skips_regex_and_sends_directly(self):
+        d = self.run_flow(InputEnvelope.for_image(self.asset), self.settings)
+        self.assertEqual(d.input_kind, "image_screenshot")
+        self.assertIs(d.local_regex_applied, False)
+        self.assertIs(d.hard_block, False)
+        self.assertIs(d.block_suppresses_request, False)
+
+
 if __name__ == "__main__":
     unittest.main()

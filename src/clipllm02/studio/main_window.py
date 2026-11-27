@@ -22,9 +22,6 @@ from .config import DEFAULT_HOTKEYS
 from .query_tab import IME_GRACE, ImeWatcher, QueryTab
 from .theme_tokens import build_qss, tokens
 
-# 保留模块级名称，内容改由统一 token 生成（浅色为默认，深色在 apply_theme 里重设）。
-STYLE = build_qss(False)
-
 
 def _draw_icon(kind: str, size: int = 18, color: str | None = None) -> QIcon:
     """自绘线条图标：不依赖系统图标主题，尺寸与颜色可控。"""

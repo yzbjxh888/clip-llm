@@ -98,7 +98,7 @@ class TestConfigAndAssets(unittest.TestCase):
         data["config_version"] = CONFIG_VERSION
         settings = settings_from_data(data)
         self.assertEqual(settings.get("config_version"), CONFIG_VERSION)
-        self.assertGreater(len(settings.routes["en_word"]["prompt"]), 1000)
+        self.assertGreater(len(settings.routes["英语单词"]["prompt"]), 1000)
         self.assertIn("LaTeX", str(settings.get("desktop_vision_prompt")))
         self.assertEqual(len(settings.data.get("legacy_rules", [])), 17)
 
@@ -295,8 +295,8 @@ class TestStudioApp(unittest.TestCase):
         # 图片侧只有一条模板：选中「图片识别」后能直接改它的兜底提示词
         # （提示词允许留空，这里只验控件可用，不断言具体文案）
         dialog.route_combo.setCurrentIndex(
-            dialog.route_combo.findData("image"))
-        self.assertEqual(dialog.route_combo.currentData(), "image")
+            dialog.route_combo.findData("图片识别"))
+        self.assertEqual(dialog.route_combo.currentData(), "图片识别")
         self.assertTrue(dialog.route_prompt.isEnabled())
         # 下拉列出全部模板（文本 + 图片分组），且可增删
         self.assertGreaterEqual(dialog.route_combo.count(), 9)

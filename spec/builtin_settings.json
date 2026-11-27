@@ -3,6 +3,31 @@
   "description": "0.2 出厂配置。routes 是骨架用的简化 RoutePack：真实 9 套完整提示词由迁移脚本从 0.1 resources/builtin.json 导入，这里只提供可运行的等价结构。",
   "trigger_policy": "menu",
   "disabled_route_action": "hide_from_menu",
+  "removed_intents": [],
+  "main_model_config": {
+    "main_model_api_url": "",
+    "main_model_key": "",
+    "main_model_name": ""
+  },
+  "short_classifier_source": "local_classifier",
+  "decision_model_config": {
+    "main_model_api_url": "",
+    "main_model_key": "",
+    "main_model_name": ""
+  },
+  "decision_model_instructions": "",
+  "decision_model_categories": {
+    "英语单词": "英语单词，单个词",
+    "英语短语": "英语短语，多个词组成的固定搭配",
+    "中文词语": "中文词语，单个或短词",
+    "中文句解": "中文句子，需要整句解释",
+    "中文答疑": "中文提问，需要回答",
+    "中文段落": "中文段落，较长文本",
+    "LaTeX 公式": "LaTeX 公式或数学表达式",
+    "代码": "代码片段或程序代码",
+    "化学物质": "化学物质，如 NaCl、H₂O",
+    "通用解析": "其他无法归类的内容（兜底）"
+  },
   "menu": {
     "enabled": true,
     "show_other_domains": true,
@@ -133,7 +158,7 @@
     "code_block_max": 1000,
     "cn_dominant_min": 6,
     "cn_max_chars": 600,
-    "text_max_chars": 1000,
+    "text_max_chars": 2000,
     "code_score_min": 0.5,
     "vowel_ratio_min": 0.15,
     "consonant_run_max": 4,
@@ -305,8 +330,8 @@
     }
   ],
   "routes": {
-    "en_word": {
-      "id": "en_word",
+    "英语单词": {
+      "id": "英语单词",
       "label": "英语单词",
       "enabled": true,
       "query_type": "english_word",
@@ -328,10 +353,11 @@
         "phrases",
         "examples",
         "memory_tip"
-      ]
+      ],
+      "source_from_decision_model": true
     },
-    "en_phrase": {
-      "id": "en_phrase",
+    "英语短语": {
+      "id": "英语短语",
       "label": "英语短语",
       "enabled": true,
       "query_type": "english_phrase",
@@ -354,10 +380,11 @@
         "opposite",
         "common_mistakes",
         "examples"
-      ]
+      ],
+      "source_from_decision_model": true
     },
-    "chinese": {
-      "id": "chinese",
+    "中文词语": {
+      "id": "中文词语",
       "label": "中文词语",
       "enabled": true,
       "query_type": "chinese",
@@ -379,10 +406,11 @@
         "operations",
         "examples",
         "anchors"
-      ]
+      ],
+      "source_from_decision_model": true
     },
-    "chinese_sentence": {
-      "id": "chinese_sentence",
+    "中文句解": {
+      "id": "中文句解",
       "label": "中文句解",
       "enabled": true,
       "query_type": "chinese_sentence",
@@ -400,10 +428,11 @@
         "rhetoric",
         "rewrite",
         "pitfalls"
-      ]
+      ],
+      "source_from_decision_model": true
     },
-    "chinese_question": {
-      "id": "chinese_question",
+    "中文答疑": {
+      "id": "中文答疑",
       "label": "中文答疑",
       "enabled": true,
       "query_type": "chinese_question",
@@ -419,10 +448,11 @@
         "key_points",
         "evidence",
         "caveats"
-      ]
+      ],
+      "source_from_decision_model": true
     },
-    "chinese_paragraph": {
-      "id": "chinese_paragraph",
+    "中文段落": {
+      "id": "中文段落",
       "label": "中文段落",
       "enabled": true,
       "query_type": "chinese_paragraph",
@@ -440,10 +470,11 @@
         "conclusion",
         "assumptions",
         "key_points"
-      ]
+      ],
+      "source_from_decision_model": true
     },
-    "latex": {
-      "id": "latex",
+    "LaTeX 公式": {
+      "id": "LaTeX 公式",
       "label": "LaTeX 公式",
       "enabled": true,
       "query_type": "latex",
@@ -462,10 +493,11 @@
         "derivation",
         "behavior",
         "applications"
-      ]
+      ],
+      "source_from_decision_model": true
     },
-    "code": {
-      "id": "code",
+    "代码": {
+      "id": "代码",
       "enabled": true,
       "query_type": "code",
       "kind": "composite",
@@ -482,10 +514,12 @@
         "flow",
         "pitfalls",
         "example"
-      ]
+      ],
+      "label": "代码",
+      "source_from_decision_model": true
     },
-    "general": {
-      "id": "general",
+    "通用解析": {
+      "id": "通用解析",
       "label": "通用解析",
       "enabled": true,
       "query_type": "general",
@@ -501,10 +535,11 @@
         "key_points",
         "examples",
         "caveats"
-      ]
+      ],
+      "source_from_decision_model": true
     },
-    "chem_substance": {
-      "id": "chem_substance",
+    "化学物质": {
+      "id": "化学物质",
       "enabled": true,
       "query_type": "chem_substance",
       "kind": "intent",
@@ -521,10 +556,11 @@
         "safety",
         "uses"
       ],
-      "label": "化学物质"
+      "label": "化学物质",
+      "source_from_decision_model": true
     },
-    "image": {
-      "id": "image",
+    "图片识别": {
+      "id": "图片识别",
       "enabled": true,
       "query_type": "image",
       "kind": "intent",

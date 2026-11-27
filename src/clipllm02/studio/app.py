@@ -18,7 +18,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QMenu, QSystemTrayIcon,
+    QApplication, QMenu, QSystemTrayIcon,
 )
 
 from ..desktop.clipboard_worker import ClipboardWorker  # noqa: F401 (serve 兼容)
@@ -27,14 +27,15 @@ from ..desktop.gateway import Gateway, GatewayConfig, GatewayResult, ResultCache
 from ..features import extract_features
 from ..modality import AssetStore
 from ..models import (
-    DomainCandidate, InputEnvelope, Preferences, Suggestion, UserSelection,
+    DomainCandidate, FlowDecision, InputEnvelope, Preferences, Suggestion, UserSelection,
     new_id, sha256_text,
 )
-from ..policy import preflight
+from ..policy import preflight, run_flow
 from ..prompts import build_request_prompt, followup_system
 from ..serve import ClipboardReader
 from ..settings import Settings, structure_signature
-from ..suggest import auto_followup_intent, build_menu, suggest
+from ..suggest import (auto_followup_intent, build_menu, suggest,
+                       suggest_with_short_source)
 from .config import DEFAULT_DESKTOP_DUP_TTL, load_config, settings_from_data
 from . import __main__ as studio_build
 from .input_bridge import InputBridge
@@ -43,7 +44,7 @@ from .json_render import (RENDER_SCHEMA, render_json_result,
 from .main_window import MainWindow
 from .vision import (
     capture_screenshot, intent_vision_prompt, read_clipboard_image,
-    read_image_file, recognize, vision_enabled, vision_route,
+    recognize, vision_enabled, vision_route,
     VisionResult, VISION_FOLLOWUP_SYSTEM,
 )
 
@@ -72,6 +73,7 @@ class StudioState:
         "previews": 0, "vision": 0, "duplicates": 0})
     quota_day: str = ""
     requests_today: int = 0
+    flow: FlowDecision | None = None
 
 
 class StudioApp(QObject):
@@ -431,9 +433,14 @@ class StudioApp(QObject):
             self.state.generation += 1
             self.state.stats["events"] += 1
             env = InputEnvelope.for_text(text, source=source)
+            flow = run_flow(env, self.settings, runtime=self._policy_runtime(),
+                            sensitive_patterns=self._sensitive_patterns())
+            self.state.flow = flow
             policy = preflight(env, self.settings,
                                runtime=self._policy_runtime(),
                                sensitive_patterns=self._sensitive_patterns())
+            self._diag("flow", kind=flow.input_kind,
+                       regex=flow.local_regex_applied, tier=flow.length_tier)
             self._diag("preflight", source=source, level=policy.level,
                        reasons=",".join(policy.block_reasons) or "-")
             if not policy.allowed:
@@ -452,7 +459,7 @@ class StudioApp(QObject):
                         "识别出的文字命中了硬拦截规则（"
                         + "、".join(policy.block_reasons) + "），已停止本次查询。")
                 return
-            s = suggest(env, policy, self.settings)
+            s = suggest_with_short_source(env, policy, self.settings)
             if s.classification:
                 self._diag("classify", category=s.classification.category,
                            reason=s.classification.reason)
@@ -1007,6 +1014,11 @@ class StudioApp(QObject):
 
     def _present_envelope(self, env, *, new_tab: bool = False) -> None:
         """图片信封复用文本的闸门/初判/菜单，只是推荐区换成图片查询方式。"""
+        flow = run_flow(env, self.settings, runtime=self._policy_runtime(),
+                        sensitive_patterns=self._sensitive_patterns())
+        self.state.flow = flow
+        self._diag("flow", kind=flow.input_kind,
+                   regex=flow.local_regex_applied, tier=flow.length_tier)
         policy = preflight(env, self.settings,
                            runtime=self._policy_runtime(),
                            sensitive_patterns=self._sensitive_patterns())
@@ -1153,13 +1165,14 @@ class StudioApp(QObject):
             self._record_chat(tab, text)
             self.state.stats["requests"] += 1
             return
-        # 一次点击走完：识别结果直接按初判的默认查询方式发给文本模型，
-        # 不再弹第二次初判（设置 → 模型 可关掉，改为先看识别结果）。
-        auto = bool((self.settings.get("image") or {}).get("auto_continue", True))
+        # v18：续跑由本条图片方式的「识别后」下拉决定，不再读全局开关：
+        # 指定具体模板 / auto → 自动组装+请求；空 → 出初判让用户选。
+        # 对未来新增的图片方式同样生效（只要 followup_route 有值）。
+        auto_submit = bool(followup)
         self.window.query_edit.setText(text[:200])
         self.process_text(
             text, source="vision", force_dedup_bypass=True,
-            auto_submit=auto, notify_block=True,
+            auto_submit=auto_submit, notify_block=True,
             force_route="" if followup == "auto" else followup)
 
     def _notice(self, title: str, message: str, tab=None) -> None:
@@ -1219,7 +1232,7 @@ class StudioApp(QObject):
                     if fresh.allowed:
                         # 查询方式 / 其他视角 / 模板的改动必须立即反映到已打开的
                         # 标签里，而不是只换掉 settings 等下一次复制才生效。
-                        sug = suggest(tab.env, fresh, self.settings)
+                        sug = suggest_with_short_source(tab.env, fresh, self.settings)
                         menu = build_menu(sug, self.settings, self.state.prefs)
                         tab.refresh_menu(tab.env, fresh, sug, menu)
                     tab.policy = fresh

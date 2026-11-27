@@ -353,7 +353,7 @@ def vision_route(settings) -> str:
     for route_id, pack in (getattr(settings, "routes", None) or {}).items():
         if isinstance(pack, dict) and pack.get("vision"):
             return route_id
-    return "image"
+    return "图片识别"
 
 
 def vision_prompt(settings) -> tuple[str, str]:
@@ -368,13 +368,19 @@ def vision_prompt(settings) -> tuple[str, str]:
 
 
 def vision_profile(settings) -> dict:
+    """视觉链路与主模型共用同一套配置（FR-003）：main_model_config 唯一来源。
+
+    旧 ``desktop_vision_*`` 优先逻辑已移除；保留键只为兼容旧配置读取，
+    不再作为覆盖主模型的第二套来源。
+    """
+    main = dict(getattr(settings, "main_model_config", None) or {})
     return {
-        "api_url": (settings.get("desktop_vision_api_url")
-                    or settings.get("desktop_api_url", "")).strip(),
-        "api_key": (settings.get("desktop_vision_api_key")
-                    or settings.get("desktop_api_key", "")).strip(),
-        "model": (settings.get("desktop_vision_model")
-                  or settings.get("desktop_model", "")).strip(),
+        "api_url": str(main.get("main_model_api_url")
+                       or settings.get("desktop_api_url", "")).strip(),
+        "api_key": str(main.get("main_model_key")
+                       or settings.get("desktop_api_key", "")).strip(),
+        "model": str(main.get("main_model_name")
+                     or settings.get("desktop_model", "")).strip(),
         "timeout": int(settings.get("desktop_timeout", 45)),
         "max_tokens": int(settings.get("desktop_max_tokens", 1500)),
     }

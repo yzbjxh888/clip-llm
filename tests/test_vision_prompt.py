@@ -21,55 +21,55 @@ class TestVisionPromptResolution(unittest.TestCase):
         settings = load_defaults()
         routes = [rid for rid, pack in settings.routes.items()
                   if pack.get("vision")]
-        self.assertEqual(routes, ["image"])
-        self.assertEqual(vision_route(settings), "image")
+        self.assertEqual(routes, ["图片识别"])
+        self.assertEqual(vision_route(settings), "图片识别")
 
     def test_every_image_intent_carries_a_prompt(self):
         settings = load_defaults()
         for intent_id in IMAGE_INTENTS:
             intent = settings.intent(intent_id)
             self.assertIsNotNone(intent, intent_id)
-            self.assertEqual(intent.primary_route, "image", intent_id)
+            self.assertEqual(intent.primary_route, "图片识别", intent_id)
             self.assertTrue(intent.prompt_override.strip(), intent_id)
 
     def test_image_intents_never_claim_to_reuse_template(self):
-        """有专属提示词就不能标「复用模板」——否则与模板内容对不上。"""
+        """v15：有专属提示词就标「自定义」，不能标「文本模板」。"""
         from clipllm02.models import intent_prompt_source
         settings = load_defaults()
         for intent_id in IMAGE_INTENTS:
             raw = next(i for i in settings.as_dict()["intents"]
                        if i.get("id") == intent_id)
             self.assertFalse(raw.get("use_legacy_template"), intent_id)
-            self.assertEqual(intent_prompt_source(raw), "专属提示词", intent_id)
+            self.assertEqual(intent_prompt_source(raw), "自定义", intent_id)
 
     def test_prompt_source_follows_actual_priority(self):
         from clipllm02.models import intent_prompt_source
         self.assertEqual(intent_prompt_source({"prompt_override": "  "}),
-                         "复用模板")
+                         "文本模板")
         self.assertEqual(intent_prompt_source({"prompt_override": "写点东西"}),
-                         "专属提示词")
+                         "自定义")
         self.assertEqual(intent_prompt_source(
             {"prompt_override": "写点东西", "custom": True}), "自定义")
 
     def test_intent_prompt_wins_over_template(self):
         """查询方式的提示词才是识别行为的唯一来源。"""
         settings = load_defaults()
-        settings.routes["image"]["prompt"] = "模板兜底提示词"
-        prompt = intent_vision_prompt(settings, "image",
+        settings.routes["图片识别"]["prompt"] = "模板兜底提示词"
+        prompt = intent_vision_prompt(settings, "图片识别",
                                       settings.intent("image.table"))
         self.assertIn("表格", prompt)
         self.assertNotIn("模板兜底提示词", prompt)
 
     def test_intent_without_override_uses_template(self):
         settings = load_defaults()
-        settings.routes["image"]["prompt"] = "模板兜底提示词"
+        settings.routes["图片识别"]["prompt"] = "模板兜底提示词"
         intent = replace(settings.intent("image.table"), prompt_override="")
         self.assertEqual(
-            intent_vision_prompt(settings, "image", intent), "模板兜底提示词")
+            intent_vision_prompt(settings, "图片识别", intent), "模板兜底提示词")
 
     def test_empty_template_prompt_falls_back_globally(self):
         settings = load_defaults()
-        settings.routes["image"]["prompt"] = ""
+        settings.routes["图片识别"]["prompt"] = ""
         settings.data["desktop_vision_prompt"] = "兜底提示词"
         self.assertEqual(vision_prompt(settings)[1], "兜底提示词")
 
@@ -87,7 +87,7 @@ class TestFreeformVisionPrompt(unittest.TestCase):
 
     def test_instruction_becomes_primary_instruction(self):
         settings = load_defaults()
-        prompt = intent_vision_prompt(settings, "image", None, "解释图里的公式")
+        prompt = intent_vision_prompt(settings, "图片识别", None, "解释图里的公式")
         self.assertTrue(prompt.startswith("按下面的要求"))
         self.assertIn("要求：解释图里的公式", prompt)
         self.assertNotIn("请识别图片中的文字和数学公式", prompt)
@@ -95,13 +95,13 @@ class TestFreeformVisionPrompt(unittest.TestCase):
     def test_prompt_mode_is_used_verbatim(self):
         settings = load_defaults()
         self.assertEqual(
-            intent_vision_prompt(settings, "image", None, "只输出图中的数值",
+            intent_vision_prompt(settings, "图片识别", None, "只输出图中的数值",
                                  mode="prompt"),
             "只输出图中的数值")
 
     def test_chosen_intent_still_wins(self):
         settings = load_defaults()
-        prompt = intent_vision_prompt(settings, "image",
+        prompt = intent_vision_prompt(settings, "图片识别",
                                       settings.intent("image.table"),
                                       "重点看第二行")
         self.assertIn("表格", prompt)
@@ -116,7 +116,7 @@ class TestVisionRouteMigration(unittest.TestCase):
         data = {"routes": dict(base["routes"]),
                 "intents": [dict(i) for i in base["intents"]],
                 "desktop_vision_route": "image_table"}
-        data["routes"].pop("image", None)
+        data["routes"].pop("图片识别", None)
         data["routes"]["image_ocr"] = {
             "id": "image_ocr", "vision": True, "label": "图片文字",
             "prompt": "我自己改过的 OCR 提示词"}
@@ -137,9 +137,9 @@ class TestVisionRouteMigration(unittest.TestCase):
         settings = load_settings(self._legacy_data())
         self.assertNotIn("image_ocr", settings.routes)
         self.assertNotIn("image_table", settings.routes)
-        self.assertTrue(settings.routes["image"].get("vision"))
+        self.assertTrue(settings.routes["图片识别"].get("vision"))
         ocr = settings.intent("image.ocr")
-        self.assertEqual(ocr.primary_route, "image")
+        self.assertEqual(ocr.primary_route, "图片识别")
         self.assertIn("我自己改过的", ocr.prompt_override)   # 自定义不能被覆盖
         self.assertIn("表格", settings.intent("image.table").prompt_override)
         self.assertNotIn("desktop_vision_route", settings.data)
@@ -181,7 +181,7 @@ class TestVisionTemplateIsGeneric(unittest.TestCase):
     """模板是类别级兜底：只放跨方式通用的规则，格式要求留在查询方式里。"""
 
     def test_factory_template_has_no_format_rules(self):
-        prompt = load_defaults().routes["image"]["prompt"]
+        prompt = load_defaults().routes["图片识别"]["prompt"]
         self.assertIn("LaTeX", prompt)          # 公式表达方式（通用）
         self.assertNotIn("$$", prompt)          # 包裹符是方式级的
         self.assertNotIn("JSON", prompt)        # 输出格式是方式级的
@@ -190,7 +190,7 @@ class TestVisionTemplateIsGeneric(unittest.TestCase):
         from clipllm02.settings import Settings
 
         data = load_defaults().as_dict()
-        data["routes"]["image"]["prompt"] = ""
+        data["routes"]["图片识别"]["prompt"] = ""
         for item in data["intents"]:
             if item["id"] == "image.ocr":
                 item["prompt_override"] = ""
@@ -209,20 +209,20 @@ class TestImageRouteIntegrity(unittest.TestCase):
         return base
 
     def test_wrong_route_is_repaired_on_load(self):
-        settings = load_settings(self._data("image.ocr", primary_route="latex"))
-        self.assertEqual(settings.intent("image.ocr").primary_route, "image")
+        settings = load_settings(self._data("image.ocr", primary_route="LaTeX 公式"))
+        self.assertEqual(settings.intent("image.ocr").primary_route, "图片识别")
 
     def test_validate_reports_wrong_route(self):
         from clipllm02.settings import Settings
 
         errors = validate(Settings(self._data("image.ocr",
-                                              primary_route="latex")))
+                                              primary_route="LaTeX 公式")))
         self.assertTrue(any("primary_route" in e.field for e in errors))
 
     def test_validate_rejects_vision_or_missing_followup(self):
         from clipllm02.settings import Settings
 
-        for bad in ("image", "no_such_route"):
+        for bad in ("图片识别", "no_such_route"):
             with self.subTest(bad=bad):
                 errors = validate(Settings(self._data(
                     "image.ocr", followup_route=bad)))
@@ -256,20 +256,20 @@ class TestVisionClassification(unittest.TestCase):
         return classify_text(text, load_defaults(), source="vision")
 
     def test_ocr_formula_prefers_formula(self):
-        self.assertEqual(self._classify(r"\(E = mc^2\)").category, "latex")
+        self.assertEqual(self._classify(r"\(E = mc^2\)").category, "LaTeX 公式")
 
     def test_ocr_chinese_paragraph_uses_chinese_template(self):
         self.assertEqual(
             self._classify("这是一段从截图里识别出来的中文说明。").category,
-            "chinese_sentence")
+            "中文句解")
 
     def test_non_formula_text_is_not_forced_into_formula(self):
         self.assertNotEqual(self._classify("表头：A B C\n第一行：1 2 3").category,
-                            "latex")
+                            "LaTeX 公式")
 
     def test_ocr_code_screenshot_is_code(self):
         text = "def f(x):\n    return x + 1"
-        self.assertEqual(self._classify(text).category, "code")
+        self.assertEqual(self._classify(text).category, "代码")
 
 
 class TestImageEnvelopeStillAllowed(unittest.TestCase):

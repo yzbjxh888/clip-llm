@@ -673,3 +673,11 @@ Ubuntu / Wayland 下窗口闪烁、置顶异常、输入法与 Chrome 串扰而�
     提示词，模型就照着旧公式答（表现为「截八面体，回来的是上一个公式的解释」，
     且 `type` 还写着「公式」）。现在两处入口都清空查询框，并记住
     `_last_query_text`；截图时若框里正是它，按残留丢弃（只认用户新写的要求）。
+
+
+## NC-001 结案登记（2026-11-27，L3 计划阶段）
+
+- **结论**：中段 80–2000 三类放行沿用现有 `classify.py::CATEGORY_RULES` + `features.py`，不新增正则或阈值。判据：`cn_paragraph`=category=="chinese_paragraph"；`code_block`=category=="code" 且 reason∈{code_block,multiline_code_symbol}；`latex_formula`=category=="latex" 且 reason=="latex"。`long_text_code` / `code_like` 弱证据不放行。
+- **证据来源**：`.factory/03-plan/research.md` §3 Decision（NC-001 结案）、`.factory/01-spec/spec.md` §7、`.factory/01-spec/schema.json`（`content_kind_allowlist` / `classification_result`）。
+- **实现落点**：`classify.py::content_kind_of()`、`features.py::content_kind_allowlist()`、`policy.py::route_mid_text()`；diagnostic `classification_result` 序列化 category/reason，三类判定与 veto 轨迹见 `explain_text()`。
+- 按 `.factory/01-spec/spec.md` §6 约定，本次只登记结论与来源，不回写 spec/schema/GLOSSARY。

@@ -226,7 +226,7 @@ class IntentOption:
     primary_route: str | None = None
     prompt_override: str = ""
     # 图片方式识别完之后怎么继续："" 直接显示识别结果；"auto" 按文本类别
-    # 自动选模板；其他值是文本模板 id（例如 "latex"）
+    # 自动选模板；其他值是文本模板 id（例如 "LaTeX 公式"）
     followup_route: str = ""
     includes: tuple[dict[str, Any], ...] = ()
     default_format: str = "static"
@@ -277,7 +277,7 @@ class IntentOption:
             label=str(view.get("label") or vid),
             hint=str(view.get("hint") or ""),
             domains=tuple(view.get("domains") or ("*",)),
-            primary_route=str(view.get("primary_route") or "general"),
+            primary_route=str(view.get("primary_route") or "通用解析"),
             prompt_override=str(view.get("prompt") or ""),
             order=int(view.get("order", 300)),
             enabled=bool(view.get("enabled", True)),
@@ -302,19 +302,25 @@ class IntentOption:
 
 
 def intent_prompt_source(item: dict[str, Any]) -> str:
-    """查询方式的提示词来源：留空即复用主路由模板，填了就是专属提示词。
+    """查询方式的提示词来源：留空即用文本模板，填了就是自定义提示词。
 
+    决策模型派生（``derived_template_source == decision_model``）的查询方式
+    即使带 ``custom`` 标记，只要没改专属提示词就仍算「文本模板」；改过
+    override 才算「自定义」。用户自建（仅 ``custom``）仍是「自定义」。
     与 ``prompts.compose_prompt`` / ``studio.vision.intent_vision_prompt``
     的优先级（override > 路由模板）严格一致。不看 ``use_legacy_template``：
     那个标记只说明提示词来自旧脚本的 9 套，不能拿来判断当前到底复用了模板
-    还是用了专属提示词——否则界面上会写着「复用模板」，实际发的却是专属内容。
+    还是用了自定义——否则界面上会写着「文本模板」，实际发的却是自定义内容。
     """
     if item.get("free_input_only"):
         return "自由输入"
+    if (item.get("derived_template_source") == "decision_model"
+            and not str(item.get("prompt_override") or "").strip()):
+        return "文本模板"                      # 决策模型派生且复用模板
     if item.get("custom"):
         return "自定义"
-    return ("专属提示词" if str(item.get("prompt_override") or "").strip()
-            else "复用模板")
+    return ("自定义" if str(item.get("prompt_override") or "").strip()
+            else "文本模板")
 
 
 @dataclass(frozen=True)
@@ -462,6 +468,72 @@ class ValidationError:
 
     def as_dict(self) -> dict[str, Any]:
         return {"field": self.field, "message": self.message, "tab": self.tab}
+
+
+@dataclass(frozen=True)
+class FlowDecision:
+    """入口分流骨架判定（schema.json 契约字段）。
+
+    承载一次入口事件的模态、正则关卡、长度分段、分类结果与硬拦截结论；
+    ``hard_block`` 只决定是否抑制弹窗与请求，不替代分类。
+    """
+    input_kind: str
+    local_regex_applied: bool
+    content_length: int
+    length_tier: str
+    classification_result: str
+    hard_block: bool
+    flow_order: tuple[str, ...]
+    block_suppresses_popup: bool = False
+    block_suppresses_request: bool = False
+    decision_model_fallback_enabled: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "input_kind": self.input_kind,
+            "local_regex_applied": self.local_regex_applied,
+            "content_length": self.content_length,
+            "length_tier": self.length_tier,
+            "classification_result": self.classification_result,
+            "hard_block": self.hard_block,
+            "flow_order": list(self.flow_order),
+            "block_suppresses_popup": self.block_suppresses_popup,
+            "block_suppresses_request": self.block_suppresses_request,
+            "decision_model_fallback_enabled": self.decision_model_fallback_enabled,
+        }
+
+
+@dataclass(frozen=True)
+class MidRoute:
+    """中段/超长判定结果（schema.json 契约字段子集）。
+
+    ``content_kind`` 命中 NC-001 三类之一时走本地分类器；否则硬拦截，
+    但 ``classification_result`` 始终保留供诊断。
+    """
+    length_tier: str
+    content_kind: str | None
+    classification_result: str
+    hard_block: bool
+    local_classifier_enabled_for_mid: bool
+    state_sent: bool
+    block_suppresses_popup: bool = False
+    block_suppresses_request: bool = False
+    boundary_prefer_block: bool = True
+    decision_model_fallback_enabled: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "length_tier": self.length_tier,
+            "content_kind": self.content_kind,
+            "classification_result": self.classification_result,
+            "hard_block": self.hard_block,
+            "local_classifier_enabled_for_mid": self.local_classifier_enabled_for_mid,
+            "state_sent": self.state_sent,
+            "block_suppresses_popup": self.block_suppresses_popup,
+            "block_suppresses_request": self.block_suppresses_request,
+            "boundary_prefer_block": self.boundary_prefer_block,
+            "decision_model_fallback_enabled": self.decision_model_fallback_enabled,
+        }
 
 
 class Preferences:

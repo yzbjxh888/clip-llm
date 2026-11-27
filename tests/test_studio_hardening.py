@@ -8,7 +8,6 @@ import io
 import json
 import os
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -189,15 +188,7 @@ class TestHardVeto(unittest.TestCase):
         app.on_intent(tab, dict(SELECTION))
         self.assertEqual(tab.request_generation, gen)
 
-    def test_quota_is_enforced_on_production_path(self):
-        """生产链路必须把 runtime 传给 preflight，否则 daily_limit 恒不命中。"""
-        app = self.app
-        app.state.quota_day = time.strftime("%Y-%m-%d")
-        app.state.requests_today = int(app.settings.get("daily_request_limit", 300))
-        before = app.state.stats["blocked"]
-        app.process_text("NaCl", source="test")
-        self.assertEqual(app.state.stats["blocked"], before + 1)
-        self.assertIsNone(app.window.current_tab().env)
+    # ADR-006 removed daily_limit: 生产链路不再有配额硬拦截，NaCl 正常进入初判。
 
     def test_sensitive_patterns_from_settings(self):
         app = self.app
@@ -374,7 +365,7 @@ class TestResultRendering(unittest.TestCase):
     def test_latex_single_backslash_is_repaired(self):
         """模型在公式里把 ``\\cap`` 写成单反斜杠时，整段 JSON 不能因此报废。"""
         raw = ('{"title": "公式",'
-               ' "latex": ["$$SO(n) = O(n) \\cap SL_n(\\mathbb{R})$$"],'
+               ' "LaTeX 公式": ["$$SO(n) = O(n) \\cap SL_n(\\mathbb{R})$$"],'
                ' "structure": ['
                '{"part": "SO(n)", "role": "左端主体", "note": "特殊正交群"},'
                '{"part": "SU(n)", "role": "右端主体", "note": "特殊酉群"}]}')
@@ -1327,10 +1318,10 @@ class TestChinesePolicySplit(unittest.TestCase):
     def test_soft_length_limits_never_block(self):
         """四类中文长度不再弹窗：只保留 1000 字符绝对上限。"""
         cases = [
-            ("深" * 130 + "。", "chinese_sentence"),
-            ("深" * 300 + "。" + "深" * 301 + "。", "chinese_paragraph"),
-            ("深" * 25, "chinese"),
-            ("深" * 130 + "？", "chinese_question"),
+            ("深" * 130 + "。", "中文句解"),
+            ("深" * 300 + "。" + "深" * 301 + "。", "中文段落"),
+            ("深" * 25, "中文词语"),
+            ("深" * 130 + "？", "中文答疑"),
         ]
         for text, category in cases:
             with self.subTest(category=category):
@@ -1369,19 +1360,19 @@ class TestCategoryClassification(unittest.TestCase):
     def test_sentence_is_judged_as_sentence_not_term(self):
         text = "逻辑斯谛映射是数学中描述非线性动力系统的经典模型。"
         c = classify_text(text, self.settings)
-        self.assertEqual(c.category, "chinese_sentence")
+        self.assertEqual(c.category, "中文句解")
         self.assertEqual(c.label, "中文句解")
         _, _, _, menu = self._build(text)
-        self.assertEqual(menu.category, "chinese_sentence")
+        self.assertEqual(menu.category, "中文句解")
         self.assertEqual(menu.category_label, "中文句解")
         self.assertEqual(menu.default_intent, "zh.sentence")
 
     def test_four_chinese_categories(self):
         cases = [
-            ("为什么天空是蓝色的？", "chinese_question"),
+            ("为什么天空是蓝色的？", "中文答疑"),
             ("第一句是定义。第二句给出了形式。第三句说明参数变化。",
-             "chinese_paragraph"),
-            ("非线性动力学", "chinese"),
+             "中文段落"),
+            ("非线性动力学", "中文词语"),
         ]
         for text, expected in cases:
             with self.subTest(expected=expected):
@@ -1391,12 +1382,12 @@ class TestCategoryClassification(unittest.TestCase):
     def test_half_selected_sentence_is_not_term(self):
         text = "当参数逐渐增大时，迭代结果会从收敛变为周期振荡，再进入混沌"
         self.assertEqual(classify_text(text, self.settings).category,
-                         "chinese_sentence")
+                         "中文句解")
 
     def test_other_modalities(self):
-        cases = [("E=mc²", "latex"), ("NaCl", "chem_substance"),
-                 ("construct", "en_word"), ("break the ice", "en_phrase"),
-                 ("def f(x):\n    return x + 1", "code")]
+        cases = [("E=mc²", "LaTeX 公式"), ("NaCl", "化学物质"),
+                 ("construct", "英语单词"), ("break the ice", "英语短语"),
+                 ("def f(x):\n    return x + 1", "代码")]
         for text, expected in cases:
             with self.subTest(text=text[:12]):
                 self.assertEqual(classify_text(text, self.settings).category,
@@ -1404,16 +1395,16 @@ class TestCategoryClassification(unittest.TestCase):
 
     def test_vision_source_prefers_formula(self):
         self.assertEqual(classify_text(r"\(E = mc^2\)", self.settings,
-                                       source="vision").category, "latex")
+                                       source="vision").category, "LaTeX 公式")
 
     def test_categories_are_dynamic_from_routes(self):
         settings = load_defaults()
-        settings.routes.pop("chinese_paragraph", None)
+        settings.routes.pop("中文段落", None)
         settings.routes["my_custom"] = {"enabled": True, "label": "我的类别"}
         c = classify_text("为什么天空是蓝色的？", settings)
         ids = [item.id for item in c.candidates]
         self.assertIn("my_custom", ids)
-        self.assertNotIn("chinese_paragraph", ids)
+        self.assertNotIn("中文段落", ids)
 
     def test_menu_exposes_other_categories_and_multi_faceted_intents(self):
         _, _, _, menu = self._build(
@@ -1432,8 +1423,8 @@ class TestCategoryClassification(unittest.TestCase):
     def test_switching_category_rebuilds_intents(self):
         _, _, sug, _ = self._build(
             "逻辑斯谛映射是数学中描述非线性动力系统的经典模型。")
-        menu = build_menu(sug, self.settings, category_id="chinese_paragraph")
-        self.assertEqual(menu.category, "chinese_paragraph")
+        menu = build_menu(sug, self.settings, category_id="中文段落")
+        self.assertEqual(menu.category, "中文段落")
         self.assertEqual(menu.recommended[0].intent.id, "zh.paragraph")
         self.assertEqual(menu.default_intent, "zh.paragraph")
 
@@ -1469,7 +1460,7 @@ class TestCategoryClassification(unittest.TestCase):
                            self.settings)
         self.assertIn("L3", out)
         self.assertIn("判定类别", out)
-        self.assertIn("chinese_sentence", out)
+        self.assertIn("中文句解", out)
 
 
 class TestDrawerAndTemplates(unittest.TestCase):
@@ -1511,9 +1502,9 @@ class TestDrawerAndTemplates(unittest.TestCase):
         self.assertIn("QToolButton#drawer", STYLE)
 
     def test_defaults_use_full_script_prompts(self):
-        self.assertGreater(len(self.settings.routes["en_word"]["prompt"]), 1000)
-        self.assertEqual(self.settings.routes["en_word"]["label"], "英语单词")
-        self.assertEqual(self.settings.routes["chinese_sentence"]["label"],
+        self.assertGreater(len(self.settings.routes["英语单词"]["prompt"]), 1000)
+        self.assertEqual(self.settings.routes["英语单词"]["label"], "英语单词")
+        self.assertEqual(self.settings.routes["中文句解"]["label"],
                          "中文句解")
 
     def test_category_switches_match_route_count(self):
@@ -1542,7 +1533,7 @@ class TestDrawerAndTemplates(unittest.TestCase):
             with patch("clipllm02.studio.settings_dialog.QInputDialog.getText",
                        return_value=("my_route", True)), \
                     patch("clipllm02.studio.settings_dialog.QInputDialog.getItem",
-                          return_value=("en_word · 英语单词", True)):
+                          return_value=("英语单词 · 英语单词", True)):
                 dialog._add_route()
             route = dialog.data["routes"]["my_route"]
             self.assertGreater(len(route["prompt"]), 1000)
@@ -1740,8 +1731,8 @@ class TestUiPolish(unittest.TestCase):
 
     def test_broken_json_fragments_are_not_shown(self):
         from clipllm02.studio.json_render import render_json_result
-        raw = ('{"query_type":"latex","title":"T","answer":"A"}\n'
-               '{"query_type":"latex","title":"S = \\hbar"')
+        raw = ('{"query_type":"LaTeX 公式","title":"T","answer":"A"}\n'
+               '{"query_type":"LaTeX 公式","title":"S = \\hbar"')
         html = render_json_result(raw)
         self.assertIn("A", html)
         self.assertNotIn("hbar", html)       # 半截 JSON 不再贴出来
@@ -1804,13 +1795,16 @@ class TestUiPolish(unittest.TestCase):
         try:
             labels = [dialog.route_combo.itemText(i)
                       for i in range(dialog.route_combo.count())]
-            self.assertNotIn("en_word", labels)
-            self.assertIn("英语单词", labels)
-            index = dialog.route_combo.findData("en_word")
+            # v11 票据 27：受 B 约束的标签统一带标注；这里只核对可编辑的名字本身
+            badge = " · 来自决策模型"
+            names = [t[:-len(badge)] if t.endswith(badge) else t for t in labels]
+            self.assertIn("英语单词", names)
+            self.assertIn("英语单词", names)
+            index = dialog.route_combo.findData("英语单词")
             self.assertGreaterEqual(index, 0)
             dialog.route_combo.setCurrentIndex(index)
             dialog.route_label_edit.setText("英语词条")
-            self.assertEqual(dialog.data["routes"]["en_word"]["label"],
+            self.assertEqual(dialog.data["routes"]["英语单词"]["label"],
                              "英语词条")
         finally:
             dialog.close()
@@ -2242,7 +2236,7 @@ class TestOtherViewOnImage(unittest.TestCase):
         self.app.on_intent(self.tab, {
             "domain_id": "*", "intent_id": "view.origin",
             "format_id": "static", "custom_instruction": None,
-            "allowed_route_ids": ["general"]})
+            "allowed_route_ids": ["通用解析"]})
         self.assertFalse(noticed, noticed)          # 不再提示「请选择图片方式」
         self.assertFalse(visions)                   # 也不走视觉分支
         self.assertIn("角度解读这张图片", self.tab._pending_content)
@@ -2302,7 +2296,7 @@ class TestImageFreeInput(unittest.TestCase):
         self.app.on_intent(tab, {"domain_id": "*", "intent_id": "image.explain",
                                  "format_id": "static",
                                  "custom_instruction": None,
-                                 "allowed_route_ids": ["image"]})
+                                 "allowed_route_ids": ["图片识别"]})
         self.assertEqual(got.get("extra"), "这张图有几个符号")
 
     def test_mixed_free_input_also_goes_to_vision(self):
@@ -2328,26 +2322,36 @@ class TestImageIntentEditor(unittest.TestCase):
         self.dialog.close()
 
     def _route_options(self):
+        # v15: 主路由下拉按组插入了不可选标题（data=None），只统计真实 route id
         combo = self.dialog.intent_route_combo
-        return [combo.itemData(i) for i in range(combo.count())]
+        return [combo.itemData(i) for i in range(combo.count())
+                if combo.itemData(i) is not None]
+
+    def _group_headers(self):
+        combo = self.dialog.intent_route_combo
+        return [combo.itemText(i) for i in range(combo.count())
+                if combo.itemData(i) is None]
 
     def test_image_intent_lists_only_vision_template(self):
         self.dialog._load_intent("image.ocr")
-        self.assertEqual(self._route_options(), ["image"])
+        self.assertEqual(self._group_headers(), ["图片模板"])
+        self.assertEqual(self._route_options(), ["图片识别"])
         self.assertFalse(self.dialog.intent_followup_combo.isHidden())
 
     def test_text_intent_hides_followup_and_vision_template(self):
         self.dialog._load_intent("zh.legacy")
+        # 出厂配置没有自定义文本模板：空组不显示标题（v15）
+        self.assertEqual(self._group_headers(), ["提示词模板"])
         self.assertTrue(self.dialog.intent_followup_combo.isHidden())
-        self.assertNotIn("image", self._route_options())
+        self.assertNotIn("图片识别", self._route_options())
 
     def test_followup_choice_round_trips(self):
         self.dialog._load_intent("image.ocr")
         combo = self.dialog.intent_followup_combo
-        combo.setCurrentIndex(combo.findData("latex"))
+        combo.setCurrentIndex(combo.findData("LaTeX 公式"))
         raw = next(i for i in self.dialog.data["intents"]
                    if i["id"] == "image.ocr")
-        self.assertEqual(raw["followup_route"], "latex")
+        self.assertEqual(raw["followup_route"], "LaTeX 公式")
 
 
 class TestVisionAutoContinue(unittest.TestCase):
@@ -2375,10 +2379,10 @@ class TestVisionAutoContinue(unittest.TestCase):
         self.assertIn("intent_id", got)
         intent = self.app.settings.intent(got["intent_id"])
         self.assertNotIn("image", intent.domains)
-        self.assertEqual(intent.primary_route, "latex")
+        self.assertEqual(intent.primary_route, "LaTeX 公式")
 
-    def test_ocr_flow_waits_for_user_choice(self):
-        """识别结果回到初判层：由用户决定用哪条文本方式继续解释。"""
+    def test_auto_followup_goes_straight_to_result(self):
+        """v18：followup='auto' → 自动判类+请求，一次点击走完（不再等第二次点击）。"""
         from types import SimpleNamespace
         from clipllm02.modality import MemoryAssetStore
 
@@ -2391,9 +2395,8 @@ class TestVisionAutoContinue(unittest.TestCase):
         result = SimpleNamespace(ok=True, text=r"\(E = mc^2\)")
         self.app._on_vision_done(
             (tab, result, "image.ocr", "提取图片中的文字", "auto"))
-        self.assertEqual(tab.stack.currentIndex(), 0)      # 初判层，等用户选
-        picked = (tab.last_selection or {}).get("intent_id")
-        self.assertIsNone(picked)                          # 不替用户自动选
+        self.assertEqual(tab.stack.currentIndex(), 1)      # 结果层，已自动续跑
+        self.assertIsNotNone(tab.last_selection)            # 已替用户选好下游方式
 
     def test_explicit_direct_show_wins_over_compat_default(self):
         """显式选「直接展示识别结果」不能被老载荷兼容逻辑改成二次查询。"""
@@ -2414,10 +2417,11 @@ class TestVisionAutoContinue(unittest.TestCase):
 
     def test_pinned_route_overrides_classification(self):
         """图片方式指定了文本模板时，按它选，而不是按判类结果。"""
-        self.assertEqual(self.app._pinned_intent("latex"), "math.legacy")
+        self.assertEqual(self.app._pinned_intent("LaTeX 公式"), "math.legacy")
         self.assertIsNone(self.app._pinned_intent("no_such_route"))
 
-    def test_vision_done_does_not_auto_submit(self):
+    def test_vision_done_auto_submits_with_auto_followup(self):
+        """v18：老载荷无 followup 字段 → 兼容默认 auto → 自动续跑。"""
         from types import SimpleNamespace
 
         env = InputEnvelope.for_text("x", source="vision")
@@ -2426,8 +2430,9 @@ class TestVisionAutoContinue(unittest.TestCase):
         self.app.process_text = lambda text, **kw: seen.update(kw, text=text)
         result = SimpleNamespace(ok=True, text=r"\(E = mc^2\)")
         self.app._on_vision_done((tab, result, "image.ocr", "提取图片中的文字"))
-        self.assertFalse(seen.get("auto_submit"))
-        self.assertEqual(seen.get("source"), "vision")
+        self.assertTrue(seen.get("auto_submit"), seen)
+        self.assertEqual(seen.get("force_route", ""), "", seen)
+        self.assertEqual(seen.get("source"), "vision", seen)
 
     def test_vision_auto_does_not_pin_latex(self):
         from types import SimpleNamespace
@@ -2448,7 +2453,7 @@ class TestFactoryCounts(unittest.TestCase):
         settings = load_defaults()
         self.assertEqual(len(settings.routes), 11)
         self.assertEqual(len(settings.intents), 41)
-        self.assertEqual(len(settings.policy.get("rules", {})), 14)
+        self.assertEqual(len(settings.policy.get("rules", {})), 12)   # ADR-007: 删 pem_block / daily_limit
 
 
 class TestImageEntrySplit(unittest.TestCase):
@@ -2500,24 +2505,30 @@ class TestImageEntrySplit(unittest.TestCase):
             StudioApp._present_envelope(app, env)
             app._notice.assert_called_once()
 
-    def test_auto_continue_defaults_off(self):
+    def test_legacy_auto_continue_field_stays_in_runtime_for_compat(self):
+        """v18：出厂字段保留（数据兼容），但运行时不再由它决定续跑。"""
         from clipllm02 import load_defaults
         s = load_defaults()
         self.assertFalse((s.get("image") or {}).get("auto_continue"))
+        # 全局开关即使置真也不能改变 followup 决定论（见 v18 gate 文件）。
 
-    def test_config_upgrade_turns_auto_continue_off(self):
+    def test_config_upgrade_drops_auto_continue_field(self):
         import json
         import tempfile
         from clipllm02.studio.config import load_config
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "settings.json"
             path.write_text(json.dumps({
-                "config_version": 7, "image": {"auto_continue": True}}),
+                "config_version": 7,
+                "image": {"max_bytes": 12345}}),
                 encoding="utf-8")
             with patch("clipllm02.studio.config.config_path",
                        return_value=path):
-                s = load_config()
-            self.assertFalse(s.get("image")["auto_continue"])
+                load_config()
+            image = (json.loads(path.read_text(encoding="utf-8"))
+                     .get("image") or {})
+            self.assertNotIn("auto_continue", image, image)
+            self.assertEqual(image["max_bytes"], 12345)
 
 
 if __name__ == "__main__":

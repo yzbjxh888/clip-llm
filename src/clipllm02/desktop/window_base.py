@@ -22,9 +22,6 @@ GRIP = 14
 MIN_W, MIN_H = 320, 200
 PROXIMITY = 60           # 诊断采样时「鼠标附近」的判定距离（像素）
 
-# 保留模块级名称，内容改由统一 token 生成；原先三份互相矛盾的 STYLE 合并为一份。
-STYLE = build_qss(False)
-
 
 class _Forwarder(QObject):
     """把子控件的鼠标事件转交给窗口做边缘判定。"""

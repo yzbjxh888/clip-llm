@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from .models import IntentOption, UserSelection
 
@@ -37,6 +38,40 @@ FREEFORM_TEMPLATE = """你是内容解释助手，服务于桌面弹窗。
 CONTRACT_MARKERS = ("【输出契约", "query_type", "JSON 转义铁律")
 
 FOLLOWUP_MARKER = "【追问模式 · 自由作答】"
+
+GENERIC_TEMPLATE: dict[str, Any] = {
+    "prompt": (
+        "你是通用解析专家，服务于桌面词典。用户输入一段内容（可能是词、句、段落、公式或截图文字），"
+        "读者希望能跨学科、多角度理解它。严格按 JSON 输出，禁止代码围栏。用清晰的中文，"
+        "分块给出：它是什么、核心意思、结构或组成、常见用法或例子、必要的背景与来源、"
+        "不同视角下的理解与争议。"
+    ),
+    "fields": [
+        "title", "what_is_it", "core_meaning", "structure", "examples",
+        "background", "perspectives", "caveats",
+    ],
+    "sections": {
+        "what_is_it": "【它是什么】一句话说清这是什么，它属于哪个领域。",
+        "core_meaning": "【核心意思】用小白能懂的话讲清它到底表达什么，避免术语堆砌。",
+        "structure": "【结构或组成】如果有内部结构或组成部分，分点列出并说明相互关系。",
+        "examples": "【例子】至少两个具体例子，覆盖不同使用场景。",
+        "background": "【背景与来源】必要的历史、起源或发展脉络，帮助理解它为什么是这样。",
+        "perspectives": "【不同视角】从不同学科、范式或立场给出不同的理解方式。",
+        "caveats": "【争议与注意】常见的误解、反对观点或需要注意的边界。",
+    },
+}
+
+# v8：不再提供空泛占位默认；新增路由一律用完整通用结构化模板。
+NEW_TEMPLATE_DEFAULT_PROMPT = GENERIC_TEMPLATE["prompt"]
+
+
+def new_template_prompt() -> str:
+    """新增提示词模板时自动注入的默认提示词（schema.json）。
+
+    v8：返回通用完整模板，调用方可从 GENERIC_TEMPLATE 同时取 fields/sections。
+    """
+    return str(GENERIC_TEMPLATE["prompt"])
+
 
 FOLLOWUP_TEMPLATE = f"""{FOLLOWUP_MARKER}（本段优先级最高，覆盖上文任何输出格式要求）
 - 你正在回答用户针对上一条解释的追问。对话历史里已有上一轮的输入与完整回答，
@@ -183,9 +218,13 @@ def compose_prompt(intent: IntentOption, settings, *, content: str = "") -> Comp
         raise ValueError(f"主路由已禁用：{intent.primary_route}")
 
     warnings: list[str] = []
-    # 意图自带的专属提示词优先于路由模板：化学不讲「英文词源」，
-    # 公式不套「通用解释」，每条查询类型有真正对应的指令。
+    # 意图自带专属提示词 > 用户编辑的模板文案 > 路由出厂提示词。
+    # 编辑只写入 route_prompts（下游），绝不回写 routes / B（单向约束）。
+    edited_prompt = str(
+        (getattr(settings, "route_prompts", {}) or {}).get(intent.primary_route)
+        or "")
     main_prompt = (intent.prompt_override.strip()
+                   or edited_prompt
                    or str(primary.get("prompt") or ""))
     fragments: list[str] = []
     extra_fields: list[str] = []

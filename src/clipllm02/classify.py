@@ -22,34 +22,34 @@ from .models import Category, Classification
 
 # 出厂类别的中文显示名；仅作为 label 回退，类别本身仍由 routes 决定。
 DEFAULT_CATEGORY_LABELS = {
-    "en_word": "英语单词", "en_phrase": "英语短语", "chinese": "中文词语",
-    "chinese_sentence": "中文句解", "chinese_question": "中文答疑",
-    "chinese_paragraph": "中文段落", "latex": "LaTeX 公式",
-    "code": "代码块", "general": "通用解析",
-    "chem_substance": "化学物质",
+    "英语单词": "英语单词", "英语短语": "英语短语", "中文词语": "中文词语",
+    "中文句解": "中文句解", "中文答疑": "中文答疑",
+    "中文段落": "中文段落", "LaTeX 公式": "LaTeX 公式",
+    "代码": "代码块", "通用解析": "通用解析",
+    "化学物质": "化学物质",
     # 图片侧只有一条模板（图片识别），4 条查询方式靠 intent 区分
-    "image": "图片识别",
+    "图片识别": "图片识别",
 }
 
 # 同类别的其他角度优先排在一起；只是排序提示，不参与类别存在性判定。
 CATEGORY_AFFINITY = {
-    "chinese": ("chinese_sentence", "chinese_question", "chinese_paragraph"),
-    "chinese_sentence": ("chinese", "chinese_paragraph", "chinese_question"),
-    "chinese_question": ("chinese_sentence", "chinese", "chinese_paragraph"),
-    "chinese_paragraph": ("chinese_sentence", "chinese", "chinese_question"),
-    "en_word": ("en_phrase", "general"), "en_phrase": ("en_word", "general"),
-    "latex": ("chem_substance", "code", "general"),
-    "chem_substance": ("latex", "general"),
-    "image": ("latex", "general"),
-    "code": ("general", "latex"), "general": ("code", "chinese"),
+    "中文词语": ("中文句解", "中文答疑", "中文段落"),
+    "中文句解": ("中文词语", "中文段落", "中文答疑"),
+    "中文答疑": ("中文句解", "中文词语", "中文段落"),
+    "中文段落": ("中文句解", "中文词语", "中文答疑"),
+    "英语单词": ("英语短语", "通用解析"), "英语短语": ("英语单词", "通用解析"),
+    "LaTeX 公式": ("化学物质", "代码", "通用解析"),
+    "化学物质": ("LaTeX 公式", "通用解析"),
+    "图片识别": ("LaTeX 公式", "通用解析"),
+    "代码": ("通用解析", "LaTeX 公式"), "通用解析": ("代码", "中文词语"),
 }
 
 # 中文结构 → 提示词模板类别（唯一映射，policy 用同一组特征做长度提示）。
 CN_SHAPE_CATEGORY = {
-    "question": "chinese_question",
-    "paragraph": "chinese_paragraph",
-    "sentence": "chinese_sentence",
-    "term": "chinese",
+    "question": "中文答疑",
+    "paragraph": "中文段落",
+    "sentence": "中文句解",
+    "term": "中文词语",
 }
 
 CITATION_REF_RE = re.compile(
@@ -138,42 +138,60 @@ CATEGORY_RULES: tuple[Rule, ...] = (
       # 代码块里的 `=`/`_`/`{}` 不是公式；只有「以公式开头」的粘贴才让
       # 代码形态让位（`\begin{align}`、`$$…` 或 `\frac…` 起头）。
       ("code_form", lambda f: f["code_form"] and not f["latex_leading"])),
-     "latex"),
+     "LaTeX 公式"),
     ("chem", lambda f: f["chem_signal"] and not f["has_cn"],
-     (), "chem_substance"),
+     (), "化学物质"),
     # 结构性证据先于长度证据：多行代码块直接判代码，长度只用于兜住
     # 「没有结构但很长、且带代码符号」的粘贴。
     ("code_block", lambda f: f["code_block"],
-     (("cn_sentence", lambda f: f["cn_sentence"]),), "code"),
+     (("cn_sentence", lambda f: f["cn_sentence"]),), "代码"),
     ("multiline_code_symbol",
      lambda f: f["is_multiline"] and f["multiline_code_sym_nocite"],
-     (("cn_sentence", lambda f: f["cn_sentence"]),), "code"),
+     (("cn_sentence", lambda f: f["cn_sentence"]),), "代码"),
     ("long_text_code", lambda f: f["letters"] > f["code_max"],
      (("no_code_signal", lambda f: not (f["code_block"]
                                         or f["multiline_code_sym_nocite"]
                                         or f["strong_sym_nocite"])),
-      ("cn_sentence", lambda f: f["cn_sentence"])), "code"),
+      ("cn_sentence", lambda f: f["cn_sentence"])), "代码"),
     ("cli_command", lambda f: f["is_cli"],
      (("english_sentence", lambda f: f["en_sentence"]),
       # 「git 怎么用？」是中文提问，不是命令块
-      ("cn_prose", lambda f: f["cn_prose"])), "general"),
+      ("cn_prose", lambda f: f["cn_prose"])), "通用解析"),
     ("code_like", lambda f: f["code_like"],
      (("path", lambda f: f["path_like"]),
       # 中文自然句里夹一段代码/调用，仍然是句解或答疑
-      ("cn_prose", lambda f: f["cn_prose"])), "code"),
+      ("cn_prose", lambda f: f["cn_prose"])), "代码"),
     ("english_word", lambda f: f["is_word"],
-     (("fake_word", lambda f: f["fake_word"]),), "en_word"),
+     (("fake_word", lambda f: f["fake_word"]),), "英语单词"),
     # 0.2 不再拦截英文整句（ADR-4），归到通用解析而不是 BLOCK
-    ("english_sentence", lambda f: f["en_sentence"], (), "general"),
-    ("english_phrase", lambda f: f["is_phrase"], (), "en_phrase"),
+    ("english_sentence", lambda f: f["en_sentence"], (), "通用解析"),
+    ("english_phrase", lambda f: f["is_phrase"], (), "英语短语"),
     ("chinese", lambda f: f["has_cn"],
      # 代码/公式只在「中文不是自然句」时抢走中文：句子里夹一个
      # `f(x) = x^2` 或 `arr.map(x => x*2)` 仍然是中文句解/答疑。
      (("code", lambda f: (f["code_like"] or f["code_block"] or f["is_cli"])
        and not f["cn_prose"]),
       ("formula", lambda f: f["latex_signal"] and not f["cn_prose"])), None),
-    ("fallback", lambda f: True, (), "general"),
+    ("fallback", lambda f: True, (), "通用解析"),
 )
+
+
+def content_kind_of(classification) -> str | None:
+    """NC-001 结案判据：复用 CATEGORY_RULES 胜出的 category/reason。
+
+    cn_paragraph=category=="中文段落"；code_block=category=="代码"
+    且 reason∈{code_block,multiline_code_symbol}；latex_formula=category=="LaTeX 公式"
+    且 reason=="LaTeX 公式"。其余（含 long_text_code/code_like 弱证据）不放行。
+    """
+    category = classification.category
+    reason = classification.reason
+    if category == "中文段落":
+        return "cn_paragraph"
+    if category == "代码" and reason in {"code_block", "multiline_code_symbol"}:
+        return "code_block"
+    if category == "LaTeX 公式" and reason == "latex":
+        return "latex_formula"
+    return None
 
 
 def available_categories(settings) -> tuple[Category, ...]:
@@ -213,7 +231,7 @@ def classify_text(text: str, settings, *, source: str = "manual",
     if not cleaned:
         # 空输入也走同一套「类别必须存在」降级；无可用类别时返回空 id，
         # 绝不伪造一个已删除/停用的 general。
-        primary = "general" if "general" in known else next(iter(known), "")
+        primary = "通用解析" if "通用解析" in known else next(iter(known), "")
         return Classification(
             category=primary,
             label=_category_label(primary, categories) if primary else "无可用模板",
@@ -227,14 +245,14 @@ def classify_text(text: str, settings, *, source: str = "manual",
     # 但必须真有公式信号：`known` 只是「已启用的类别」，拿它当判据会把
     # 截图里的表格文字、菜单文字一起塞进公式模板。代码/中文段落仍不强行变。
     vision_formula = (source == "vision" and f["latex_signal"]
-                      and "latex" in known
+                      and "LaTeX 公式" in known
                       and not f["code_form"] and not f["cn_prose"])
     if vision_formula:
         if explain:
             trace.append("L3 [vision_source]：图片输入优先公式类别")
-        primary, reason = "latex", "vision_source"
+        primary, reason = "LaTeX 公式", "vision_source"
     else:
-        primary, reason = "general", "fallback"
+        primary, reason = "通用解析", "fallback"
         for name, requires, vetoes, category in CATEGORY_RULES:
             if not requires(f):
                 if explain:
@@ -245,7 +263,7 @@ def classify_text(text: str, settings, *, source: str = "manual",
                 if explain:
                     trace.append(f"L3 [{name}]：命中但被 {veto} 否决")
                 continue
-            primary = CN_SHAPE_CATEGORY.get(f["shape"], "chinese") \
+            primary = CN_SHAPE_CATEGORY.get(f["shape"], "中文词语") \
                 if category is None else category
             reason = name
             if explain:
@@ -256,7 +274,7 @@ def classify_text(text: str, settings, *, source: str = "manual",
     if primary not in known:
         if explain:
             trace.append(f"类别 {primary} 未启用，降级到可用类别")
-        primary = "general" if "general" in known else next(iter(known), "")
+        primary = "通用解析" if "通用解析" in known else next(iter(known), "")
 
     return Classification(
         category=primary,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clipllm02"
-version = "0.2.41"
+version = "0.2.45"
 description = "clip-llm 0.2 可插拔内容解释与路由引擎：核心骨架（纯标准库）"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,7 +17,6 @@ desktop = ["PySide6-Essentials>=6.8"]
 clipllm02 = "clipllm02.cli:main"
 clipllm02-desktop = "clipllm02.studio.__main__:main"
 clipllm02-studio = "clipllm02.studio.__main__:main"
-clipllm02-classic = "clipllm02.desktop.__main__:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

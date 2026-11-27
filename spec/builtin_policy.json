@@ -82,16 +82,8 @@
       "description": "password / api_key / 私钥 / otpauth / 验证码；多行代码里的示例写法仍然豁免",
       "multiline_code_exempt": true
     },
-    "pem_block": {
-      "label": "私钥文件",
-      "level": "BLOCK",
-      "locked": false,
-      "detector": "feature",
-      "feature": "pem_block",
-      "description": "包含 BEGIN … PRIVATE KEY 的 PEM 私钥块"
-    },
     "too_long": {
-      "label": "超过 1000 字符",
+      "label": "超过 2000 字符",
       "level": "BLOCK",
       "locked": true,
       "detector": "threshold",
@@ -105,13 +97,6 @@
       "locked": false,
       "detector": "dedup",
       "description": "短时间内重复复制同一内容：静默跳过，不弹窗也不报错"
-    },
-    "daily_limit": {
-      "label": "每日请求上限",
-      "level": "BLOCK",
-      "locked": true,
-      "detector": "quota",
-      "description": "当日请求数达到 daily_request_limit 后不再弹窗"
     }
   },
   "notices": {

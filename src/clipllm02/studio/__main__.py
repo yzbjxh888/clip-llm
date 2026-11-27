@@ -34,7 +34,7 @@ def check_single_instance() -> None:
     `clipllm02.studio.input_host` 这类子进程误判为主实例。
     """
     import subprocess
-    script_names = {"clipllm02-desktop", "clipllm02-studio", "clipllm02-classic"}
+    script_names = {"clipllm02-desktop", "clipllm02-studio"}
     modules = {"clipllm02.studio", "clipllm02.desktop"}
     try:
         out = subprocess.run(["pgrep", "-f", "clipllm02"],

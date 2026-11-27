@@ -95,7 +95,8 @@ class TestPolicy(unittest.TestCase):
         self.assertEqual(result.level, "ALLOW")
 
     def test_absolute_length_still_blocks(self):
-        result = self._check("A" * 1200)
+        # ADR-003: 绝对上限由 1000 抬到 2000；用 2001 字符验证新边界仍拦截。
+        result = self._check("A" * 2001)
         self.assertEqual(result.level, "BLOCK")
         self.assertIn("too_long", result.block_reasons)
 
@@ -105,9 +106,10 @@ class TestPolicy(unittest.TestCase):
         self.assertEqual(result.level, "ALLOW")
         self.assertFalse(result.hits)
 
-    def test_quota_blocks(self):
-        result = self._check("NaCl", requests_today=300)
-        self.assertEqual(result.level, "BLOCK")
+    # ADR-006 removed daily_limit: quota is no longer a block reason.
+    # The removed-rule gate is asserted by test_entry_flow_skeleton.T007RuleSet
+    # and the studio factory-count test; the runtime quota branch in policy.py
+    # stays harmless but is no longer exercised by a built-in rule.
 
     def test_duplicate_is_skipped(self):
         result = self._check("NaCl", is_duplicate=True)

@@ -28,11 +28,11 @@ class TestChineseVsCode(unittest.TestCase):
         for text in cases:
             with self.subTest(text=text[:14]):
                 self.assertEqual(
-                    classify_text(text, self.settings).category, "code")
+                    classify_text(text, self.settings).category, "代码")
 
     def test_cli_with_chinese_is_not_chinese_template(self):
         result = classify_text("git commit -m 'fix 中文'", self.settings)
-        self.assertNotIn(result.category, ("chinese", "chinese_sentence"))
+        self.assertNotIn(result.category, ("中文词语", "中文句解"))
 
 
 class TestCodeVsFormula(unittest.TestCase):
@@ -61,30 +61,30 @@ class TestCodeVsFormula(unittest.TestCase):
         fs = extract_features(self.CPP)
         self.assertFalse(fs.get("latex_signal"))
         self.assertTrue(fs.get("code_signal"))
-        self.assertEqual(classify_text(self.CPP, self.settings).category, "code")
+        self.assertEqual(classify_text(self.CPP, self.settings).category, "代码")
 
     def test_latex_block_starting_with_begin_is_formula(self):
         text = ("\\begin{align}\n"
                 "x &= a + b \\\\\n"
                 "y &= c + d\n"
                 "\\end{align}")
-        self.assertEqual(classify_text(text, self.settings).category, "latex")
+        self.assertEqual(classify_text(text, self.settings).category, "LaTeX 公式")
 
     def test_latex_string_inside_script_is_code(self):
         text = ('import math\n'
                 'formula = r"$\\frac{a}{b}$"\n'
                 'print(formula)')
-        self.assertEqual(classify_text(text, self.settings).category, "code")
+        self.assertEqual(classify_text(text, self.settings).category, "代码")
 
     def test_code_with_subscript_identifiers_is_code(self):
         self.assertEqual(classify_text("int x_1 = 0;", self.settings).category,
-                         "code")
+                         "代码")
 
     def test_standalone_formula_is_not_code(self):
         for text in ("x_{n+1} = x_n (1 - x_n)", "a^2 + b^2 = c^2"):
             with self.subTest(text=text):
                 self.assertEqual(classify_text(text, self.settings).category,
-                                 "latex")
+                                 "LaTeX 公式")
 
 
 class TestFormulaAndChemistry(unittest.TestCase):
@@ -95,28 +95,28 @@ class TestFormulaAndChemistry(unittest.TestCase):
     def test_formula_with_chinese_question_is_question(self):
         text = r"求导 $\frac{dy}{dx}$ 怎么算？"
         self.assertEqual(classify_text(text, self.settings).category,
-                         "chinese_question")
+                         "中文答疑")
 
     def test_formula_with_chinese_caption_is_formula(self):
         text = "a^2 + b^2 = c^2 这是勾股定理"
-        self.assertEqual(classify_text(text, self.settings).category, "latex")
+        self.assertEqual(classify_text(text, self.settings).category, "LaTeX 公式")
 
     def test_function_formula_is_not_code(self):
         self.assertEqual(classify_text("f(x) = x^2", self.settings).category,
-                         "latex")
+                         "LaTeX 公式")
 
     def test_camel_words_are_not_chemicals(self):
         for word in ("LaTeX", "PhD"):
             with self.subTest(word=word):
                 self.assertFalse(extract_features(word).get("chem_signal"))
                 self.assertEqual(classify_text(word, self.settings).category,
-                                 "en_word")
+                                 "英语单词")
 
     def test_real_formulas_are_chemicals(self):
         for word in ("NaCl", "H2O"):
             with self.subTest(word=word):
                 self.assertEqual(classify_text(word, self.settings).category,
-                                 "chem_substance")
+                                 "化学物质")
 
 
 class TestPathAndNoise(unittest.TestCase):
@@ -127,29 +127,29 @@ class TestPathAndNoise(unittest.TestCase):
     def test_windows_path_is_not_latex(self):
         text = r"C:\Users\x\a.txt"
         self.assertFalse(extract_features(text).get("latex_signal"))
-        self.assertEqual(classify_text(text, self.settings).category, "general")
+        self.assertEqual(classify_text(text, self.settings).category, "通用解析")
         result = preflight(InputEnvelope.for_text(text), self.settings)
         self.assertIn("path", [h.reason for h in result.hits])
 
     def test_command_with_path_still_explainable(self):
         self.assertEqual(classify_text("cd /usr/local/bin", self.settings).category,
-                         "general")
+                         "通用解析")
 
     def test_keyboard_mash_is_not_english_word(self):
         for text in ("asdfghjkl", "abcdefghijklmnop"):
             with self.subTest(text=text):
                 self.assertFalse(extract_features(text).get("is_word"))
                 self.assertEqual(classify_text(text, self.settings).category,
-                                 "general")
+                                 "通用解析")
 
     def test_identifier_is_not_english_word(self):
         self.assertFalse(extract_features("getUserName").get("is_word"))
         self.assertEqual(classify_text("getUserName", self.settings).category,
-                         "general")
+                         "通用解析")
 
     def test_repeated_chars_not_english_word(self):
         self.assertEqual(classify_text("aaaaaaaaaaaa", self.settings).category,
-                         "general")
+                         "通用解析")
 
     def test_acronym_is_still_a_word(self):
         self.assertTrue(extract_features("NASA").get("is_word"))
@@ -164,11 +164,11 @@ class TestChineseShapes(unittest.TestCase):
 
     def test_four_shapes(self):
         cases = [
-            ("熵增原理", "chinese"),
-            ("这是一句话。", "chinese_sentence"),
+            ("熵增原理", "中文词语"),
+            ("这是一句话。", "中文句解"),
             ("第一句是定义。第二句给出了形式。第三句说明参数变化。",
-             "chinese_paragraph"),
-            ("为什么天空是蓝色的？", "chinese_question"),
+             "中文段落"),
+            ("为什么天空是蓝色的？", "中文答疑"),
         ]
         for text, expected in cases:
             with self.subTest(expected=expected):
@@ -178,21 +178,21 @@ class TestChineseShapes(unittest.TestCase):
     def test_half_selected_clause_is_sentence(self):
         text = "当参数逐渐增大时，迭代结果会从收敛变为周期振荡，再进入混沌"
         self.assertEqual(classify_text(text, self.settings).category,
-                         "chinese_sentence")
+                         "中文句解")
 
     def test_multiline_without_punctuation_is_paragraph(self):
         text = "第一行内容\n第二行内容\n第三行内容\n第四行内容\n第五行"
         self.assertTrue(extract_features(text).get("cn_paragraph_shape"))
         self.assertEqual(classify_text(text, self.settings).category,
-                         "chinese_paragraph")
+                         "中文段落")
 
     def test_length_notices_do_not_block(self):
         """中文软长度上限只提示、不弹窗：一律 ALLOW，只受 1000 字符绝对上限约束。"""
         cases = [
-            ("深" * 25, "chinese"),
-            ("深" * 130 + "。", "chinese_sentence"),
-            ("深" * 300 + "。" + "深" * 301 + "。", "chinese_paragraph"),
-            ("深" * 130 + "？", "chinese_question"),
+            ("深" * 25, "中文词语"),
+            ("深" * 130 + "。", "中文句解"),
+            ("深" * 300 + "。" + "深" * 301 + "。", "中文段落"),
+            ("深" * 130 + "？", "中文答疑"),
         ]
         for text, expected in cases:
             with self.subTest(expected=expected):
@@ -211,7 +211,7 @@ class TestGateAndRouting(unittest.TestCase):
     def test_sentence_with_url_is_not_code(self):
         text = "https://arxiv.org/abs/2411.01234 这篇讲什么"
         self.assertEqual(classify_text(text, self.settings).category,
-                         "chinese_sentence")
+                         "中文句解")
         hits = [h.reason for h in
                 preflight(InputEnvelope.for_text(text), self.settings).hits]
         self.assertNotIn("chinese_too_long", hits)
@@ -233,7 +233,7 @@ class TestGateAndRouting(unittest.TestCase):
             "config.py": "filename",
             "alice@example.com": "email",
             "3f2a9c1b8d4e5f6a7b8c9d0e1f2a3b4c": "token_blob",
-            "-----BEGIN RSA PRIVATE KEY-----": "pem_block",
+            "-----BEGIN RSA PRIVATE KEY-----": "secret",  # ADR-007: pem_block 已并入 secret
         }
         for text, reason in cases.items():
             with self.subTest(reason=reason):
@@ -255,7 +255,7 @@ class TestGateAndRouting(unittest.TestCase):
         self.assertNotIn("secret", [h.reason for h in result.hits])
 
     def test_absolute_cap_counts_non_letters(self):
-        for text in ("1" * 5000, "A" * 1200):
+        for text in ("1" * 5000, "A" * 2001):   # ADR-003: 绝对上限 2000
             with self.subTest(kind=text[0]):
                 result = preflight(InputEnvelope.for_text(text), self.settings)
                 self.assertEqual(result.level, "BLOCK")
@@ -284,6 +284,57 @@ class TestGateAndRouting(unittest.TestCase):
         self.assertNotIn("chinese_too_long", settings.policy["rules"])
         self.assertNotIn("drive", settings.policy["rules"])
         self.assertEqual(set(settings.policy["levels"]), {"BLOCK", "ALLOW"})
+
+
+
+CN_PARA = ("第一段说明性文字，用来解释这个概念的定义与适用条件。\n"
+           "第二段继续展开论证，给出可核验的要点与反例。\n"
+           "第三段总结前提与结论，并指出隐含假设。") * 3
+CODE = ("def compute_value(x):\n    if x < 0:\n        return -x\n    return x * 2\n") * 5
+LATEX = ("\\begin{align}\nE &= mc^2 \\\\\n\\int_0^1 x^2 \\, dx &= \\frac{1}{3}\n\\end{align}\n") * 3
+OTHER = ("break the ice and make a decision about the ordinary meaning "
+         "of words in this sentence ") * 2
+
+class TestMidTierRouting(unittest.TestCase):
+    """T020/T023/T024/T039: 三类放行不发 state，其余硬拦截且留诊断。"""
+
+    def setUp(self):
+        from clipllm02 import InputEnvelope, load_defaults, policy as policy_mod
+        self.settings = load_defaults()
+        self.policy = policy_mod
+        self.env = InputEnvelope.for_text
+
+    def test_allowed_kinds_use_local_classifier_without_state(self):
+        fn = getattr(self.policy, "route_mid_text", None)
+        self.assertIsNotNone(fn)
+        for text, kind in [(CN_PARA[:120], "cn_paragraph"),
+                           (CODE[:150], "code_block"),
+                           (LATEX[:150], "latex_formula")]:
+            with self.subTest(kind=kind):
+                r = fn(self.env(text), self.settings)
+                self.assertEqual(r.content_kind, kind)
+                self.assertIs(r.local_classifier_enabled_for_mid, True)
+                self.assertIs(r.state_sent, False)
+                self.assertIs(r.hard_block, False)
+                self.assertTrue(r.classification_result)
+
+    def test_other_mid_content_is_blocked_silently_with_diagnostic(self):
+        fn = getattr(self.policy, "route_mid_text", None)
+        self.assertIsNotNone(fn)
+        r = fn(self.env(OTHER), self.settings)
+        self.assertIs(r.hard_block, True)
+        self.assertIs(r.state_sent, False)
+        self.assertIs(r.block_suppresses_popup, True)
+        self.assertIs(r.block_suppresses_request, True)
+        self.assertTrue(r.classification_result)
+
+    def test_over_2000_blocked_with_diagnostic(self):
+        fn = getattr(self.policy, "route_mid_text", None)
+        self.assertIsNotNone(fn)
+        r = fn(self.env("A" * 2001), self.settings)
+        self.assertEqual(r.length_tier, "long_over_2000")
+        self.assertIs(r.hard_block, True)
+        self.assertTrue(r.classification_result)
 
 
 if __name__ == "__main__":

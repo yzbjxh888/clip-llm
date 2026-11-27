@@ -48,26 +48,26 @@ class TestDefaults(unittest.TestCase):
         self.assertFalse(any("chrome_newtab" in e.field for e in errors))
 
     def test_disabled_route_does_not_block_saving(self):
-        settings = load_settings({"routes": {"en_phrase": {"enabled": False}}})
+        settings = load_settings({"routes": {"英语短语": {"enabled": False}}})
         self.assertEqual([e.as_dict() for e in validate(settings)], [])
         env = InputEnvelope.for_text("break the ice")
         menu = build_menu(suggest(env, preflight(env, settings), settings), settings)
         enabled_routes = {o.intent.primary_route for o in menu.recommended + menu.others}
-        self.assertNotIn("en_phrase", enabled_routes)
+        self.assertNotIn("英语短语", enabled_routes)
         self.assertIn("en.phrase.legacy", {o.intent.id for o in menu.grayed})
 
     def test_closing_phrase_query_is_valid(self):
         """规格 04_SETTINGS_SPEC.md §3.2：禁 intent + 禁 route 必须能直接保存。"""
         data = load_defaults().as_dict()
-        data["routes"]["en_phrase"]["enabled"] = False
+        data["routes"]["英语短语"]["enabled"] = False
         for item in data["intents"]:
-            if item.get("primary_route") == "en_phrase":
+            if item.get("primary_route") == "英语短语":
                 item["enabled"] = False
         settings = load_settings(data)
         self.assertEqual([e.as_dict() for e in validate(settings)], [])
         env = InputEnvelope.for_text("break the ice")
         menu = build_menu(suggest(env, preflight(env, settings), settings), settings)
-        self.assertFalse(any(o.intent.primary_route == "en_phrase"
+        self.assertFalse(any(o.intent.primary_route == "英语短语"
                              for o in menu.recommended + menu.others))
         self.assertTrue(menu.recommended)     # 通用解释仍可用
 
@@ -101,7 +101,7 @@ class TestStructureSignature(unittest.TestCase):
     def test_route_and_intent_changes_change_signature(self):
         a = structure_signature(load_defaults())
         b = structure_signature(load_settings(
-            {"routes": {"en_word": {"enabled": False}}}))
+            {"routes": {"英语单词": {"enabled": False}}}))
         c = structure_signature(load_settings(
             {"menu": {"show_disabled_items": "hidden"}}))
         self.assertNotEqual(a, b)

@@ -22,6 +22,15 @@ from typing import Any, Callable
 
 from .models import FeatureSet, InputEnvelope
 
+# NC-001 / ADR-008: 中段放行的三类；判据在 classify.py::content_kind_of，
+# 这里只导出只读清单，不新增任何正则或阈值。
+CONTENT_KIND_ALLOWLIST = ("cn_paragraph", "code_block", "latex_formula")
+
+
+def content_kind_allowlist() -> tuple[str, ...]:
+    return CONTENT_KIND_ALLOWLIST
+
+
 # --------------------------------------------------------------------------
 # 判别式（与 0.1 保持一致的命名与语义）
 # --------------------------------------------------------------------------
@@ -98,7 +107,6 @@ CODE_KEYWORDS_RE = re.compile(
 )
 CN_SENT_END_RE = re.compile(r"[。；！？…]\s*$")
 CN_PUNCT_RE = re.compile(r"[。！？…]")
-CN_SENT_END_ANY_RE = re.compile(r"[。！？…]")
 CN_CLAUSE_RE = re.compile(r"[，、；：]")
 FULLWIDTH_PUNCT_RE = re.compile(r"[。！？…，、；：（）【】《》“”‘’—]")
 HALFWIDTH_PUNCT_RE = re.compile(r"[,.;:!?()\[\]{}\"'<>|/\\@#$%^&*_+=~`-]")
@@ -235,7 +243,7 @@ def _cn_dominant(c: TextContext) -> bool:
 # -- 标点体制 ---------------------------------------------------------------
 @feature("sentence_end_count", "中文句末标点数量（。！？…）")
 def _sentence_end_count(c: TextContext) -> int:
-    return len(CN_SENT_END_ANY_RE.findall(c.text))
+    return len(CN_PUNCT_RE.findall(c.text))
 
 
 @feature("clause_count", "中文分句标点数量（，、；：）")
